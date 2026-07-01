@@ -1,0 +1,8 @@
+# @file sim.yaml
+# @brief 시뮬레이션 실행 파라미터 (core.config_schema.SimConfig).
+sim:
+  dt: 0.02              # 적분 간격 [s] (50 Hz). 실차 제어 주기와 맞추는 게 좋다.
+  max_time: 60.0        # 최대 시뮬 시간 [s] (무한 루프 방지).
+  goal_tolerance: 0.15  # 경로 끝 도달 판정 거리 [m].
+  path_name: s_curve    # straight | circle | s_curve | sharp_s | figure_eight | rotary
+  battery_voltage: 7.4  # 시뮬 중 가정 배터리 전압 [V].

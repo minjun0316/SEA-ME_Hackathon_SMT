@@ -1,0 +1,34 @@
+# @file controller.yaml
+# @brief 제어기 튜닝 파라미터 (Pure Pursuit / Speed / Battery).
+#
+# State Machine(Stage 6)은 상태별로 이 값들 중 lookahead/speed/조향제한만
+# 바꾼다. 컨트롤러 자체는 모든 상태에서 동일하다.
+
+pure_pursuit:
+  use_adaptive_lookahead: true  # 초기 테스트 시 false로 두고 fixed_lookahead만 튜닝 권장.
+  fixed_lookahead: 0.6          # use_adaptive_lookahead=false일 때 사용 [m].
+  # Adaptive: Ld = ld_min + kv*speed - kc*|curvature|, [ld_min, ld_max]로 clip.
+  ld_min: 0.3                   # 최소 lookahead [m]. 너무 작으면 진동(oscillation).
+  ld_max: 1.2                   # 최대 lookahead [m]. 너무 크면 코너 컷(corner cut).
+  kv: 0.4                       # 속도 이득 [s]. 빠를수록 멀리 본다 → 안정.
+  kc: 0.1                       # 곡률 이득 [m^2]. 곡률 클수록 가까이 본다 → 민첩.
+  steering_gain: 1.0            # 출력 보정. 실차 언더/오버스티어 보정용(보통 1.0).
+  steering_smoothing: 0.3       # 신규 명령 가중치 β. out=(1-β)*old+β*new. 작을수록 부드럽고 느림.
+  search_window: 60             # 전방 최근접 탐색 윈도우(점 개수). 자기교차/되돌아오는 경로 안정화. 0=전역탐색.
+
+speed:
+  v_max: 0.8                    # 직선 최대 속도(정규화 또는 m/s).
+  v_min: 0.3                    # 급커브 최소 속도.
+  curvature_gain: 0.5          # |κ| 1당 감속량. v = v_max - gain*|κ|.
+  use_speed_pid: false          # 운동학 시뮬은 false. 실차 throttle↔속도 보정 시 true.
+  kp: 0.5
+  ki: 0.0
+  kd: 0.0
+
+battery:
+  enabled: false                # 배터리 토픽(/battery_status) 연동 시 true.
+  v_nominal: 7.4                # 공칭 전압 [V] (2S LiPo).
+  v_min: 6.4                    # 보정 하한 [V].
+  v_max: 8.4                    # 보정 상한 [V].
+  max_gain: 1.5                 # 보정 배수 상한(과보상 방지).
+  lookup_table: []              # [[V, gain], ...] 지정 시 수식 대신 LUT 보간.

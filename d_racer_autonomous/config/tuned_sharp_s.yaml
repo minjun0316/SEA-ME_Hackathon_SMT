@@ -1,0 +1,5 @@
+pure_pursuit:
+  ld_min: 0.3
+  kv: 0.2
+  kc: 0.2
+  steering_smoothing: 0.4
