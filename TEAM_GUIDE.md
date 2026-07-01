@@ -39,16 +39,20 @@ pull 명령어가 **머신에 따라 다릅니다.** 헷갈리지 마세요.
 git pull                  # 전체 다 받기 (기존 방식 그대로)
 ```
 
-### 🚗 D3G (실차 실행용 머신) — 최신 스냅샷만 얕게 pull
+### 🚗 D3G (실차 실행용 머신) — 최신 스냅샷만 받기
 D3G는 코드를 **실행(YOLO 등)만** 하는 머신이라 과거 커밋 기록이 필요 없습니다.
 용량·다운로드 시간을 아끼려고 **최신 스냅샷 1개만** 얕게(shallow) 받습니다.
+얕은 저장소에서는 `git pull`이 "divergent branches" 오류로 자꾸 막히므로,
+아래처럼 **fetch 후 원격과 강제로 동일하게 맞추는** 방식을 쓰세요.
 ```
-git pull --depth 1 origin dev   # D3G 전용: 최신 것만 얕게 받기
+git fetch --depth 1 origin dev   # 최신 스냅샷만 얕게 가져오기
+git reset --hard origin/dev      # 로컬을 원격 최신과 완전히 동일하게 맞춤
 ```
-- ⛔ D3G에서는 **pull만** 하세요. 얕은 저장소라 여기서 직접 commit/push하면 꼬일 수 있습니다.
+- ⛔ D3G에서는 **받기만** 하세요. 얕은 저장소라 여기서 직접 commit/push하면 꼬입니다.
+- ⚠️ `reset --hard`는 로컬 변경을 버립니다. D3G는 실행 전용이라 버릴 게 없어 안전합니다.
 - 개발·커밋·push는 **노트북에서만** 하고, D3G는 최신 코드를 받아 실행하는 용도로만 씁니다.
 
-> 요약: **노트북 = `git pull` (전체)** / **D3G = `git pull --depth 1 origin dev` (최신만)**
+> 요약: **노트북 = `git pull` (전체)** / **D3G = `git fetch --depth 1 origin dev` + `git reset --hard origin/dev`**
 
 ## 3. 주의사항 (꼭 지켜주세요)
 
@@ -66,7 +70,7 @@ git pull --depth 1 origin dev   # D3G 전용: 최신 것만 얕게 받기
 |---|---|
 | `git status` | 지금 뭐가 바뀌었는지 확인 |
 | `git pull` | 최신 내용 받기 (노트북·개발용, 전체) |
-| `git pull --depth 1 origin dev` | 최신 스냅샷만 얕게 받기 (**D3G 실행용 전용**) |
+| `git fetch --depth 1 origin dev` + `git reset --hard origin/dev` | 최신 스냅샷만 받아 원격과 동일하게 맞추기 (**D3G 실행용 전용**) |
 | `git add .` | 바뀐 파일 전부 담기 |
 | `git commit -m "메시지"` | 저장(스냅샷) |
 | `git push` | GitHub에 업로드 |
