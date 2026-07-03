@@ -1,6 +1,8 @@
 # D-Racer 자율주행 — 진행 상황 / 다음 할 일
 
-> 마지막 작업일: 2026-06-30. 이 문서는 매 세션 끝에 갱신한다.
+> 마지막 작업일: 2026-07-03. 이 문서는 매 세션 끝에 갱신한다.
+>
+> **작업 환경 변경(07-03)**: 이제 보드에서 직접 편집·빌드·커밋한다. 워크스페이스=팀레포 `~/SEA-ME_Hackathon_SMT`(= colcon ws, `build/ install/ src/` 포함). 옛 `~/D-Racer-Kit`는 통합되어 없어짐. scp 왕복 불필요.
 
 ## 한 줄 요약
 ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차(보드) 연결 시작 — 캘리브레이션 진행 중.
@@ -54,6 +56,18 @@ pkill -f calibration_node                         # 정지
 
 ---
 
+## 🔖 2026-07-02/03 세션 메모
+
+### 트림 모델 확정 (가법 가정 폐기) ⭐
+- control_node.py 코드 확인: `/control` 명령이 오면 `self.steering = msg.steering` (control_node.py:121) — **트림을 안 더하고 그대로** 서보로. `STEER_TRIM`은 시작 idle값(75)·종료 중립값(151)으로만 쓰임.
+- 결론: **직진 서보명령 = 0.2238**. 키트 `vehicle_config.yaml: STEER_TRIM=0.2238`(commit 93c31a0 push 완료), 우리 `vehicle.yaml: steer_trim=0.2238`. **우리 controller가 출력에 0.2238을 직접 더한다.**
+- 팀 참고: 팀원이 올렸던 0.3238은 가법가정 실수 → 0.2238로 정정·push됨.
+
+### 데이터 행방 (⚠️ 확인 필요)
+- 보드 `YOLOv26n_seg/datasets/` **비어 있음** (collect1 없음, capture_frames.py 저장경로 `datasets/SECOND/`도 없음). 보드 디스크에 07-02 카메라 프레임 없음.
+- 07-02 rosbag `bagfile/bag_20260702_091344`는 `/joystick`만 214개(카메라 없음) — 학습데이터 아님.
+- → Roboflow 업로드분/데스크탑에 사진이 있는지 확인할 것. 없으면 트랙에서 재수집.
+
 ## 🔖 2026-07-01 세션 메모 (배터리 방전으로 중단)
 
 ### 배관 재검증 완료 ✅ (오늘 실차에서 확인)
@@ -69,7 +83,7 @@ pkill -f calibration_node                         # 정지
 
 ### 2차 세션(07-01 오후) 실주행 결과
 - **직진값 후보: calibration steering ≈ 0.22** (보드 STEER_TRIM=0.30 상태에서 실제 바닥 주행이 제일 곧게 감). 거치대 눈대중(0.35)보다 낮음 — 역시 굴려봐야 정확. 배터리 충전 후 재확인 필요.
-  → 확정 시 최종 STEER_TRIM ≈ 0.30+0.22 = **0.52** 로 보드 vehicle_config.yaml에 기록하고 controller는 0 출력하게. (additive 가정, 재검증 필요)
+  → ~~확정 시 최종 STEER_TRIM ≈ 0.30+0.22 = 0.52 (additive 가정)~~ **[07-02 폐기]** 가법 가정은 틀림. control_node.py:121에서 `/control` 명령을 트림 없이 그대로 서보에 전달함(steer_trim은 idle/종료 중립값으로만 사용). 실측 직진 서보명령 = **0.2238**. → 키트 vehicle_config.yaml `STEER_TRIM=0.2238`, 우리 controller가 출력에 0.2238을 직접 더한다.
 - **모터 데드존(바닥)**: throttle 0.15로는 안 돌고 삐 소리만. throttle_limit을 0.22~0.25로 풀어야 함(`ros2 run racer_bringup calibration_node --ros-args -p mode:=hold -p throttle_limit:=0.25`). launch파일 쓰면 0.15로 리셋되니 주의.
 - **⚠️ 배터리 이슈 재발**: 주행 중 방전되어 보드 네트워크 끊김(No route to host) → 재부팅. 이후 모터가 throttle 0.18에도 삐 소리만 나고 안 돎 = **저전압 컷오프 의심**(조향 서보는 됨). 충전/완충 배터리 교체로 해결 예상. 대회 전 여분 배터리·완충 습관 필요.
 - 주행 테스트 시 **차가 와이파이 범위 벗어나지 않게**, 멀어지기 전에 throttle 0.
@@ -91,7 +105,7 @@ pkill -f calibration_node                         # 정지
 ### 1. 캘리브레이션 마무리 (거치대, 바퀴 띄운 상태)
 - [~] **최대 조향각**: 손측정 ≈ **10도** → `config/vehicle.yaml: max_steer_deg=10.0` (잠정, 실주행 원그리기 δ=atan(L/R)로 재확인)
 - [ ] **throttle 데드존 측정**: `throttle 0.08`부터 0.02씩 올려 뒷바퀴 막 도는 값 찾기 (⚠️ 바퀴 띄운 상태 필수)
-- [x] **직진 트림**: 실주행 직진값 = 서보명령 **0.22** (보드 STEER_TRIM 0.30 상태). 총 트림 **0.52** → `config/vehicle.yaml: steer_trim=0.52` 기록됨. ⏳ **남은 일**: 보드 `vehicle_config.yaml: STEER_TRIM`을 0.52로 바꾸고 controller가 0 출력 시 직진하는지 재검증(가법 가정 확인).
+- [x] **직진 트림 (07-02 확정)**: 실주행 직진 서보명령 = **0.2238**. 가법 가정 폐기(control_node는 /control 명령을 트림 없이 그대로 서보 전달, control_node.py:121). → 키트 `src/config/vehicle_config.yaml: STEER_TRIM=0.2238` (commit 93c31a0, push 완료), 우리 `config/vehicle.yaml: steer_trim=0.2238` 기록됨. controller가 출력에 0.2238을 직접 더한다.
 - [x] **휠베이스** 자로 측정 → `config/vehicle.yaml: wheelbase` = **0.175** (2026-07-01, 좌우 1mm차 무시)
 - [ ] 측정값으로 `core.feasibility.check_path` 다시 돌려 실제 차량 기준 경로 가능여부 확인
 

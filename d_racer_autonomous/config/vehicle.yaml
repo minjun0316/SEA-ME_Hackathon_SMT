@@ -5,5 +5,5 @@
 vehicle:
   wheelbase: 0.175       # 휠베이스 L [m] — 앞/뒤 차축 거리. 실측값(2026-07-01, 좌우 1mm차 무시).
   max_steer_deg: 10.0    # 물리 조향각 한계 [deg]. 손측정(2026-07-01) 잠정값 — 실주행 원그리기로 재확인 예정.
-  steer_trim: 0.52       # 직진 보정(중립 오프셋), 정규화 [-1,1]. 실측: 서보명령 0.22+보드트림0.30=0.52에서 직진(2026-07-01). 보드 vehicle_config.yaml STEER_TRIM도 0.52로 맞출 것(가법 가정, 재검증).
+  steer_trim: 0.2238     # 직진 보정(중립 오프셋), 정규화 [-1,1]. 실측: 서보명령 0.2238에서 직진(2026-07-02). 키트 control_node는 /control 명령을 트림 없이 그대로 서보에 전달(control_node.py:121, steer_trim은 idle/종료 중립값으로만 사용) → 우리 controller가 출력에 이 값을 직접 더해야 함(가법 가정 폐기). 키트 vehicle_config.yaml STEER_TRIM도 동일 0.2238.
   speed_tau: 0.15        # 속도 1차 지연 시상수 [s] (시뮬 현실성용). 실차엔 영향 없음.
