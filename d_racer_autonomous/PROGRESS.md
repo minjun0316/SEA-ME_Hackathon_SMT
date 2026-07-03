@@ -5,7 +5,31 @@
 > **작업 환경 변경(07-03)**: 이제 보드에서 직접 편집·빌드·커밋한다. 워크스페이스=팀레포 `~/SEA-ME_Hackathon_SMT`(= colcon ws, `build/ install/ src/` 포함). 옛 `~/D-Racer-Kit`는 통합되어 없어짐. scp 왕복 불필요.
 
 ## 한 줄 요약
-ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차(보드) 연결 시작 — 캘리브레이션 진행 중.
+ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료, Stage 6-b controller_node 작성·검증 완료. 인지/판단 착수 준비(인터페이스 계약 확정, core 구조 정리).
+
+---
+
+## ▶ 다음 세션 여기서 시작 (2026-07-03 마감 기준)
+
+**환경 준비(터미널 접속하면 항상)**
+```bash
+cd ~/SEA-ME_Hackathon_SMT && source /opt/ros/humble/setup.bash && source install/setup.bash
+```
+
+**git**: `dev` 브랜치 = origin/dev 동일(다 push됨, HEAD=35644c7). 데스크탑에선 작업 안 함(보드 단일 작업).
+
+**바로 할 수 있는 다음 후보(택1)**
+1. **실차 조향 눈확인**(배터리 완충 필요, 거치대): T1 `ros2 run control control_node --ros-args -p use_joystick_control:=False` + T2 `ros2 launch racer_bringup controller.launch.py path:=circle` → 앞바퀴가 곡률 방향으로 꺾이는지. 이후 저속 `enable_drive:=True drive_throttle:=0.12`.
+2. **`racer_msgs` 패키지 신설** (인지/판단 전제): `LaneStatus.msg`, `DriveCommand.msg` (정의는 `docs/interfaces.md` §4.3/4.4 그대로). ament_cmake 메시지 패키지, `src/`에 생성 후 빌드.
+3. **perception_yolo 확장**: 현재 `perception/lane_offset`(Float32)만 발행 → `/perception/lane_path`(nav_msgs/Path) + `/perception/lane_status` 추가. 순수 기하는 `core/perception/`에 구현, YOLO 추론은 노드에 유지.
+4. **decision_node(판단) 착수**: `core/planning/`에 State Machine(순수 로직) → 얇은 ROS 노드로 래핑, `/decision/drive_command` 발행.
+
+**착수 전 확인**: `docs/interfaces.md §9 결정 대기 4건`(lane_path 타입=nav_msgs/Path, 패키지명 racer_msgs, base_link 원점=뒷차축, 정지선 우선) 팀 합의.
+
+**미해결/주의**
+- collect1/SECOND 학습사진 보드 디스크에 없음 → Roboflow/데스크탑 확인 or 재수집.
+- 배터리 방전 잦음 → 완충 여분 필수. i2c 먹통 시 점퍼선 재체결.
+- (별건) perception_yolo launch `model_path` 하드코딩 → 파라미터화 권장.
 
 ---
 
