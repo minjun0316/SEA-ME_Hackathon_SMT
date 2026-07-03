@@ -109,10 +109,24 @@ pkill -f calibration_node                         # 정지
 - [x] **휠베이스** 자로 측정 → `config/vehicle.yaml: wheelbase` = **0.175** (2026-07-01, 좌우 1mm차 무시)
 - [ ] 측정값으로 `core.feasibility.check_path` 다시 돌려 실제 차량 기준 경로 가능여부 확인
 
-### 2. Stage 6-b: controller_node (core 감싸기)
-- [ ] `core`를 import하는 ROS2 `controller_node` 작성 (PurePursuit+Speed → /control)
-- [ ] 문제: 카메라 인지 없어 차량 pose 없음 → 폐루프 주행은 아직 불가. 우선 정적경로로 "곡률에 맞는 조향 명령이 나오는지" 거치대/저속 확인
-- [ ] core를 보드에서 import 가능하게 패키징 (ament_python 패키지로 만들거나 PYTHONPATH)
+### 2. Stage 6-b: controller_node (core 감싸기) — ✅ 노드 작성·검증 완료(07-03), 실차 확인 남음
+- [x] `core`를 import하는 ROS2 `controller_node` 작성: `racer_bringup/controller_node.py` (PurePursuit+Speed → /control). launch `controller.launch.py`, entry point 등록.
+- [x] core 패키징: 하드코딩·복사 없이 `_find_core_root()`가 상위 디렉토리에서 `d_racer_autonomous/`(core/+config/)를 찾아 sys.path 삽입. **소스·colcon install 위치 둘 다** 해석 확인(install에서 core_root=…/d_racer_autonomous 정상). `D_RACER_ROOT` 환경변수로 override 가능.
+- [x] 트림: PP `compute()`가 `steer_trim`(0.2238)을 이미 출력에 더하므로 노드는 `steering_norm` 그대로 발행(재가산 금지). 스모크: straight→0.2238(δ=0°), circle→+5.00°, sharp_s→포화(+10°).
+- [x] 안전: `enable_drive`(기본 False)→throttle=0, True라도 `throttle_limit`(0.15) 하드클램프. Speed는 계산·로깅만(속도→throttle 매핑은 Stage 4).
+- [x] 빌드/실행 확인: `colcon build --packages-select racer_bringup` OK, `ros2 run racer_bringup controller_node`로 /control 발행·로깅 확인(하드웨어 미접촉 토픽).
+- [ ] **실차 확인 남음**: 거치대에서 `control_node(use_joystick_control:=False)` + `controller.launch.py path:=circle`로 앞바퀴가 곡률 방향으로 꺾이는지 눈으로 검증. 이후 저속 `enable_drive:=True drive_throttle:=0.12`.
+- [ ] (알아둘 점) max_steer_deg=10 + trim 0.2238이라 정규화 조향 실효범위 비대칭([-0.776, +1.0], 우측 조기 포화). 물리적 사실 — 필요시 트림/최대각 재측정.
+
+  사용법:
+  ```bash
+  cd ~/SEA-ME_Hackathon_SMT && source /opt/ros/humble/setup.bash && source install/setup.bash
+  # T1: 키트 모터 제어(켜둠)
+  ros2 run control control_node --ros-args -p use_joystick_control:=False
+  # T2: 우리 컨트롤러 (조향만, throttle=0)
+  ros2 launch racer_bringup controller.launch.py path:=circle
+  # 저속 구동까지(거치대에서): enable_drive:=True drive_throttle:=0.12
+  ```
 
 ### 3. Stage 4: 실차 주행 + 로깅
 - [ ] logger_node로 주행 로그(CSV/rosbag) 저장 → MATLAB 분석 → 재튜닝
