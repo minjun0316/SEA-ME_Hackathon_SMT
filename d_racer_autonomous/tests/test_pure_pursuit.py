@@ -5,7 +5,7 @@ import math
 from core import path_factory
 from core.config_schema import (AppConfig, BatteryConfig, PurePursuitConfig,
                                 SpeedConfig, VehicleConfig)
-from core.controllers import (BatteryCompensator, PurePursuitController,
+from core.control import (BatteryCompensator, PurePursuitController,
                               SpeedController)
 from core.geometry import Pose2D
 from sim.simulator import Simulator

@@ -90,8 +90,8 @@ from control_msgs.msg import Control  # noqa: E402
 
 from core import path_factory  # noqa: E402
 from core.config_schema import load_config  # noqa: E402
-from core.controllers.pure_pursuit import PurePursuitController  # noqa: E402
-from core.controllers.speed_controller import SpeedController  # noqa: E402
+from core.control.pure_pursuit import PurePursuitController  # noqa: E402
+from core.control.speed_controller import SpeedController  # noqa: E402
 from core.geometry import Pose2D  # noqa: E402
 
 
