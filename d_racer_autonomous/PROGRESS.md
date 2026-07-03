@@ -144,3 +144,4 @@ pkill -f calibration_node                         # 정지
 - 하드코딩 금지, 모든 파라미터 YAML.
 - 개발 순서 준수: Static Path → Bicycle Model → 튜닝 → 실차 → 분석 → Perception.
 - 자세한 설계는 `docs/architecture.md`, 캘리브레이션 절차는 `docs/calibration.md`.
+- **노드 인터페이스 계약(인지/판단/제어 토픽·메시지)은 `docs/interfaces.md`** — 인지·판단 구현 전 반드시 참조/합의.
