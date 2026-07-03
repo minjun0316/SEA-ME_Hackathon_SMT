@@ -8,7 +8,7 @@ ROI_TOP: 50
 ROI_LEFT: 0
 
 # Vehicle control parameters
-STEER_TRIM: 0.3238
+STEER_TRIM: 0.2238
 
 # Web server configuration
 WEB_HOST: 172.30.1.30
