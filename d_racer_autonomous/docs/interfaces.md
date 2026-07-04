@@ -151,11 +151,11 @@ uint8 STATE_LOST=4        # 차선 소실 → 정지 또는 마지막 조향 유
 ---
 
 ## 8. 현재 상태 대비 갭 (구현 시 처리)
-- perception_yolo는 지금 `perception/lane_offset`(Float32)만 발행 → **`/perception/lane_path`(nav_msgs/Path) + `/perception/lane_status`로 확장**해야 함. (lateral_offset은 LaneStatus로 흡수)
+- `d_racer_perception` ROS2 패키지 신규 작성 필요. 테스트/실차 인지 노드는 **`/perception/lane_path`(nav_msgs/Path) + `/perception/lane_status`**를 발행해야 함. (lateral_offset은 LaneStatus로 흡수)
 - `racer_msgs` 패키지 **신규 생성** 필요(LaneStatus, DriveCommand). control_msgs와 분리(앱 레벨 메시지).
 - controller_node에 lane_path/drive_command 구독 + watchdog + `source` 파라미터 추가.
 - decision_node **신규 작성**(State Machine).
-- (별건) perception_yolo launch의 `model_path` 하드코딩(`/home/topst/...best.pt`) → 파라미터/상대경로화 권장.
+- YOLO/OpenCV 테스트 모델과 데이터는 git에 직접 올리지 않고, 다운로드 스크립트와 config만 관리.
 
 ---
 

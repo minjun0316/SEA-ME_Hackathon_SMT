@@ -7,12 +7,17 @@ __pycache__/
 src/makedb/
 src/inference/
 
-# --- YOLOv26n_seg 학습 부산물 (노트북 학습 전용, D3G 실행엔 불필요) ---
-YOLOv26n_seg/datasets/     # 학습 데이터셋 (이미지·라벨, 대용량)
-YOLOv26n_seg/runs/         # 학습 결과·로그·중간 체크포인트
-*.cache                    # ultralytics 라벨 캐시 등
-yolo26*.pt                 # 자동 다운로드되는 사전학습 가중치 (재다운로드 가능, 커밋 불필요)
-# 배포용 가중치(YOLOv26n_seg/models/best.pt)는 D3G가 실행에 쓰므로 올립니다 (무시 안 함)
+# --- Perception test assets (download on the board, do not commit) ---
+d_racer_autonomous/ros2_ws/src/d_racer_perception/models/*
+!d_racer_autonomous/ros2_ws/src/d_racer_perception/models/README.md
+d_racer_autonomous/ros2_ws/src/d_racer_perception/test_data/*
+!d_racer_autonomous/ros2_ws/src/d_racer_perception/test_data/README.md
+*.cache
+*.pt
+*.onnx
+*.engine
+*.weights
+*.h5
 
 # --- 대용량 원본 데이터 ---
 *.bag                      # ROS bag 녹화 파일 (트랙 데이터 등, 대용량)

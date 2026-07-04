@@ -1,0 +1,8 @@
+yolo_seg_test_node:
+  ros__parameters:
+    image_topic: camera/image/compressed
+    model_path: yolo_seg_test.pt
+    conf: 0.25
+    imgsz: 640
+    publish_debug: true
+    debug_jpeg_quality: 80

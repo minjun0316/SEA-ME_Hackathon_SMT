@@ -21,7 +21,7 @@ cd ~/SEA-ME_Hackathon_SMT && source /opt/ros/humble/setup.bash && source install
 **바로 할 수 있는 다음 후보(택1)**
 1. **실차 조향 눈확인**(배터리 완충 필요, 거치대): T1 `ros2 run control control_node --ros-args -p use_joystick_control:=False` + T2 `ros2 launch racer_bringup controller.launch.py path:=circle` → 앞바퀴가 곡률 방향으로 꺾이는지. 이후 저속 `enable_drive:=True drive_throttle:=0.12`.
 2. **`racer_msgs` 패키지 신설** (인지/판단 전제): `LaneStatus.msg`, `DriveCommand.msg` (정의는 `docs/interfaces.md` §4.3/4.4 그대로). ament_cmake 메시지 패키지, `src/`에 생성 후 빌드.
-3. **perception_yolo 확장**: 현재 `perception/lane_offset`(Float32)만 발행 → `/perception/lane_path`(nav_msgs/Path) + `/perception/lane_status` 추가. 순수 기하는 `core/perception/`에 구현, YOLO 추론은 노드에 유지.
+3. **`d_racer_perception` 신설**: `ros2_ws/src/d_racer_perception`에 테스트/실차 인지 ROS2 노드 추가. `/perception/lane_path`(nav_msgs/Path) + `/perception/lane_status` 발행. 순수 기하는 `core/perception/`에 구현, YOLO/OpenCV 실행은 노드에 유지.
 4. **decision_node(판단) 착수**: `core/planning/`에 State Machine(순수 로직) → 얇은 ROS 노드로 래핑, `/decision/drive_command` 발행.
 
 **착수 전 확인**: `docs/interfaces.md §9 결정 대기 4건`(lane_path 타입=nav_msgs/Path, 패키지명 racer_msgs, base_link 원점=뒷차축, 정지선 우선) 팀 합의.
@@ -29,7 +29,7 @@ cd ~/SEA-ME_Hackathon_SMT && source /opt/ros/humble/setup.bash && source install
 **미해결/주의**
 - collect1/SECOND 학습사진 보드 디스크에 없음 → Roboflow/데스크탑 확인 or 재수집.
 - 배터리 방전 잦음 → 완충 여분 필수. i2c 먹통 시 점퍼선 재체결.
-- (별건) perception_yolo launch `model_path` 하드코딩 → 파라미터화 권장.
+- 기존 임시 YOLO 폴더들은 baseline과 분리하기 위해 삭제. 새 인지 코드는 `d_racer_autonomous/ros2_ws/src/d_racer_perception`에서 개발.
 
 ---
 
@@ -88,7 +88,7 @@ pkill -f calibration_node                         # 정지
 - 팀 참고: 팀원이 올렸던 0.3238은 가법가정 실수 → 0.2238로 정정·push됨.
 
 ### 데이터 행방 (⚠️ 확인 필요)
-- 보드 `YOLOv26n_seg/datasets/` **비어 있음** (collect1 없음, capture_frames.py 저장경로 `datasets/SECOND/`도 없음). 보드 디스크에 07-02 카메라 프레임 없음.
+- 기존 임시 YOLO 데이터 폴더에는 collect1/SECOND 데이터가 없었음. 보드 디스크에 07-02 카메라 프레임 없음.
 - 07-02 rosbag `bagfile/bag_20260702_091344`는 `/joystick`만 214개(카메라 없음) — 학습데이터 아님.
 - → Roboflow 업로드분/데스크탑에 사진이 있는지 확인할 것. 없으면 트랙에서 재수집.
 
