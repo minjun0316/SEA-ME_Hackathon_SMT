@@ -28,13 +28,12 @@ setup(
     zip_safe=True,
     maintainer='SMT',
     maintainer_email='alexshin3@kookmin.ac.kr',
-    description='D-Racer perception experiment nodes for YOLO segmentation/detection tests.',
+    description='D-Racer perception experiment nodes for YOLO detection tests.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'yolo_detect_test_node = d_racer_perception.yolo_detect_test_node:main',
-            'yolo_seg_test_node = d_racer_perception.yolo_seg_test_node:main',
         ],
     },
 )

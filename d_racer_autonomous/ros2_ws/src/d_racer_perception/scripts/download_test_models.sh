@@ -6,10 +6,8 @@ PKG_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MODELS_DIR="${PKG_DIR}/models"
 TEST_DATA_DIR="${PKG_DIR}/test_data"
 
-DETECT_MODEL_NAME="${DETECT_MODEL_NAME:-yolo11n.pt}"
-SEG_MODEL_NAME="${SEG_MODEL_NAME:-yolo11n-seg.pt}"
+DETECT_MODEL_NAME="${DETECT_MODEL_NAME:-yolo26n.pt}"
 DETECT_MODEL_URL="${DETECT_MODEL_URL:-}"
-SEG_MODEL_URL="${SEG_MODEL_URL:-}"
 TEST_DATA_URL="${TEST_DATA_URL:-}"
 
 mkdir -p "${MODELS_DIR}" "${TEST_DATA_DIR}"
@@ -67,24 +65,35 @@ else
   download_ultralytics_model "${DETECT_MODEL_NAME}" "${MODELS_DIR}/yolo_detect_test.pt"
 fi
 
-if [[ -n "${SEG_MODEL_URL}" ]]; then
-  download_url "${SEG_MODEL_URL}" "${MODELS_DIR}/yolo_seg_test.pt"
-else
-  download_ultralytics_model "${SEG_MODEL_NAME}" "${MODELS_DIR}/yolo_seg_test.pt"
-fi
-
 if [[ -n "${TEST_DATA_URL}" ]]; then
   download_url "${TEST_DATA_URL}" "${TEST_DATA_DIR}/test_data_download"
 fi
 
+# NCNN export for on-board (D3-G) inference: ~2x faster than torch CPU, ~1 core.
+echo "Exporting NCNN model (imgsz=320) for on-board inference..."
+MODELS_DIR="${MODELS_DIR}" python3 - <<'PY'
+import os
+from pathlib import Path
+from ultralytics import YOLO
+
+models_dir = Path(os.environ["MODELS_DIR"])
+pt = models_dir / "yolo_detect_test.pt"
+out = models_dir / "yolo_detect_test_ncnn_model"
+if out.exists():
+    print(f"Already exists: {out}")
+else:
+    YOLO(str(pt)).export(format="ncnn", imgsz=320)
+    print(f"Exported {out}")
+PY
+
 INSTALL_SHARE="$(cd "${PKG_DIR}/../../.." && pwd)/install/d_racer_perception/share/d_racer_perception"
 if [[ -d "${INSTALL_SHARE}" ]]; then
-  mkdir -p "${INSTALL_SHARE}/models" "${INSTALL_SHARE}/test_data"
-  cp -f "${MODELS_DIR}/yolo_detect_test.pt" "${INSTALL_SHARE}/models/"
-  cp -f "${MODELS_DIR}/yolo_seg_test.pt" "${INSTALL_SHARE}/models/"
+  mkdir -p "${INSTALL_SHARE}/models"
+  cp -rf "${MODELS_DIR}/yolo_detect_test.pt" "${INSTALL_SHARE}/models/"
+  cp -rf "${MODELS_DIR}/yolo_detect_test_ncnn_model" "${INSTALL_SHARE}/models/"
   echo "Mirrored models to ${INSTALL_SHARE}/models"
 fi
 
 echo "Done."
-echo "Detect model: ${MODELS_DIR}/yolo_detect_test.pt"
-echo "Seg model:    ${MODELS_DIR}/yolo_seg_test.pt"
+echo "Detect model (torch): ${MODELS_DIR}/yolo_detect_test.pt"
+echo "Detect model (ncnn):  ${MODELS_DIR}/yolo_detect_test_ncnn_model"

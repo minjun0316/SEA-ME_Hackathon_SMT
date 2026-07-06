@@ -3,7 +3,7 @@
 <package format="3">
   <name>d_racer_perception</name>
   <version>0.1.0</version>
-  <description>D-Racer perception experiment nodes for YOLO segmentation/detection tests.</description>
+  <description>D-Racer perception experiment nodes for YOLO detection tests.</description>
   <maintainer email="alexshin3@kookmin.ac.kr">SMT</maintainer>
   <license>Apache-2.0</license>
 
