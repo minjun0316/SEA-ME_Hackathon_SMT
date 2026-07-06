@@ -27,6 +27,7 @@ setup(
         'console_scripts': [
             'calibration_node = racer_bringup.calibration_node:main',
             'controller_node = racer_bringup.controller_node:main',
+            'decision_node = racer_bringup.decision_node:main',
         ],
     },
 )
