@@ -1,22 +1,42 @@
 # D-Racer 자율주행 — 진행 상황 / 다음 할 일
 
-> 마지막 작업일: 2026-07-03. 이 문서는 매 세션 끝에 갱신한다.
+> 마지막 작업일: 2026-07-06. 이 문서는 매 세션 끝에 갱신한다.
 >
 > **작업 환경 변경(07-03)**: 이제 보드에서 직접 편집·빌드·커밋한다. 워크스페이스=팀레포 `~/SEA-ME_Hackathon_SMT`(= colcon ws, `build/ install/ src/` 포함). 옛 `~/D-Racer-Kit`는 통합되어 없어짐. scp 왕복 불필요.
 
 ## 한 줄 요약
-ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료, Stage 6-b controller_node 작성·검증 완료. 인지/판단 착수 준비(인터페이스 계약 확정, core 구조 정리).
+ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료, Stage 6-b controller_node 작성·검증 완료. **판단 2계층(아래층 반응형 decision + 위층 미션 MissionSequencer M0~M6) 순수 로직 완성·테스트 50개 통과.** 다음은 ROS화(racer_msgs → decision_node).
 
 ---
 
-## ▶ 다음 세션 여기서 시작 (2026-07-03 마감 기준)
+## ▶ 다음 세션 여기서 시작 (2026-07-05 마감 기준)
+
+### ✅ 완료(07-06): `MissionSequencer` 뼈대 (위층 미션 페이즈 SM)
+- `core/planning/mission.py` 신설 — `MissionSequencer`(위층). 아래층 `DecisionMaker`를 **소유·호출**해 합성.
+  - `MissionPhase(M0~M6)`, `stopline_count`, `TrafficLight`, `MissionObservation`(차선관측+미션신호).
+  - 페이즈: M0신호대기→GREEN출발→M1흰→노랑전환M2→정지선 rising-edge count(1=loop,2=exit `turn_hint`)→흰전환M3→**빨강구역M4(아루코 보이면 STOP, 아니면 주행)**→구역벗어남M5→정지구역접근M6종료.
+  - 정지 페이즈(M0·M6·M4아루코)는 STOP 강제. M2 갈림길 정지선은 아래층에 **마스킹**해 통과(정지 방지).
+  - `DriveCommand`에 `follow_color`(WHITE/YELLOW)+`turn_hint`(NONE/LEFT/RIGHT) 추가.
+  - `MissionConfig`+`config/mission.yaml`(circle_loop_side/exit_side, stop_line_debounce, stop_zone_stop_dist). 좌/우·거리는 **대회장 확정** 전제 기본값.
+- 테스트 `tests/test_mission.py` 17개(+기존 33) = **전체 50개 통과**.
+- **문서 갱신**: `docs/mission_fsm.md` M4를 빨강 바닥 구역(진입/탈출) + 아루코(정지/재출발)로 반영.
+
+### ★ 다음 세션 바로 할 일: 판단 ROS화
+- `racer_msgs` 패키지 신설: `LaneStatus.msg`, `DriveCommand.msg`(정의는 `docs/interfaces.md` §4.3/4.4). 신규 신호(traffic_light/red_zone/aruco/stop_zone/follow_color/turn_hint)는 `mission_fsm.md §6`대로 **인지팀 합의 후** 계약(interfaces.md) 갱신.
+- 얇은 `decision_node`: `MissionSequencer`(+내부 DecisionMaker)를 감싸 인지 토픽 구독 → `/decision/drive_command` 발행. controller_node에 drive_command 구독+watchdog(계약 §5).
+- **미확정(대회장서 확정)**: `circle_loop_side/exit_side` 좌/우, 각종 거리 임계값. (A)진입직선=출구정지선 직전인지 (B)M6 4바퀴 정밀정지 데드레커닝.
+
+### 미션 요약 (docs/mission_fsm.md 참조)
+M0 신호대기(초록불,YOLO) → M1 흰직진 → M2 지름길(노랑: 직선→갈림길 정지선 1회=count1 loop쪽 → 원 한바퀴 → 정지선 2회=count2 exit쪽 → 직선→커브→흰전환) → M3 흰직진 → M4 아루코 마커(보이는동안 정지) → M5 흰직진 → M6 정지구역(YOLO) 위 4바퀴 정지.
+- **갈림길 분기**: 양쪽 노랑·곡률동일 → 색/곡률로 구분 불가. 판단은 count로 `turn_hint=L/R`만, OpenCV가 ROI 반자르기(또는 히스토그램 봉우리 택1)로 그쪽 갈래 추종. 좌/우=YAML(대회장).
+- **미확정**: (A) 진입직선이 정지선 바로 직전인지=한바퀴 성립조건(트랙확인) (B) 정지구역 4바퀴 정밀정지=카메라 사각→데드레커닝 별도설계 (C) 인터페이스 신규신호 인지팀 합의.
 
 **환경 준비(터미널 접속하면 항상)**
 ```bash
 cd ~/SEA-ME_Hackathon_SMT && source /opt/ros/humble/setup.bash && source install/setup.bash
 ```
 
-**git**: `dev` 브랜치 = origin/dev 동일(다 push됨, HEAD=35644c7). 데스크탑에선 작업 안 함(보드 단일 작업).
+**git**: `dev` 브랜치. 07-06에 판단 2계층(반응형 decision + 미션 mission) 순수 로직을 **한 커밋으로 정리**(어제분 미커밋 decision.py 포함). 인지팀 변경분(`d_racer_perception/*`, `bench_yolo.py`)·`bagfile/`은 **제외**하고 커밋함. ROS화(racer_msgs/decision_node)는 아직 미착수.
 
 **바로 할 수 있는 다음 후보(택1)**
 1. **실차 조향 눈확인**(배터리 완충 필요, 거치대): T1 `ros2 run control control_node --ros-args -p use_joystick_control:=False` + T2 `ros2 launch racer_bringup controller.launch.py path:=circle` → 앞바퀴가 곡률 방향으로 꺾이는지. 이후 저속 `enable_drive:=True drive_throttle:=0.12`.
@@ -77,6 +97,47 @@ pkill -f calibration_node                         # 정지
 - ✅ control_node 하드웨어 연결 확인 (i2c bus=3, PCA9685 0x40)
 - ✅ **조향 배관 검증**: 우리 노드 → /control → 서보 → 앞바퀴 좌우 움직임 확인 (steer_sweep)
 - ✅ calibration_node 실시간 파라미터 조정 동작 (hold 모드, 값 바뀔 때만 로그)
+
+---
+
+## 🔖 2026-07-04/05 세션 메모 (판단 로직 + YOLO 벤치마킹)
+
+### 판단(Decision) 상태기계 — core 순수 로직 작성·검증 완료 ⭐ (07-05)
+- `core/planning/decision.py` 신설. ROS-free, (LaneObservation, dt) → DriveCommand.
+  - `DriveState(IntEnum)`: INIT=0/DRIVE=1/SLOW=2/STOP=3/LOST=4 (**계약 §4.4 값과 일치**).
+  - `LaneObservation`: LaneStatus 미러(+외부 `stop_request`). `DriveCommand`: state/go/speed_scale/lookahead_scale/steer_limit.
+  - `DecisionMaker.update()`: 우선순위 **정지요청 > 소실(LOST) > 정지선 > 신뢰도/자세(DRIVE/SLOW)**.
+    - 소실: 유효검출 끊김이 `lost_grace`(0.3s) 이상 지속돼야 LOST(짧은 끊김은 직전상태 유지 → 떨림 방지).
+    - 복귀: INIT/LOST는 유효검출 `recover_grace`(0.1s) 이어져야 주행 진입.
+    - SLOW 유발: confidence<conf_drive(0.6) 또는 |heading|≥0.35rad 또는 |offset|≥0.12m 또는 정지선 접근(≤0.6m).
+    - STOP: 정지선 ≤0.25m 또는 stop_request. 정지선 STOP은 `stop_dwell`(2s) 후 재출발 래치 → 데드락 방지.
+- 임계값 스키마: `core/config_schema.py`에 `DecisionConfig` 추가, `AppConfig.decision`로 편입. 튜닝값 `config/decision.yaml`.
+- 판단은 제어기 튜닝(controller.yaml) 안 건드림, "배율/게이트"만 냄(계약 원칙 준수).
+- 테스트 `tests/test_decision.py` **12개 전부 통과**(전체 스위트 33개 통과). config 3-파일 병합 로드 확인.
+- **다음(ROS화)**: `racer_msgs`(LaneStatus/DriveCommand) 생성 후 얇은 `decision_node`가 이 로직을 감싸 `/perception/lane_status` 구독 → `/decision/drive_command` 발행. controller_node에 drive_command 구독+watchdog 반영(계약 §5).
+
+### YOLO 위치 재정리 (commit 13fb28a, 07-04)
+
+### YOLO 위치 재정리 (commit 13fb28a, 07-04)
+- 추론 노드(YOLO 실행): `d_racer_autonomous/ros2_ws/src/d_racer_perception`
+- 후처리 로직(순수 기하): `d_racer_autonomous/core/perception/`
+- `d_racer_perception`은 현재 **제거 가능한 테스트 노드**만 포함(`yolo_detect_test_node`, `yolo_seg_test_node`) — 모델 런타임·카메라 배선·디버그 출력 확인용. 최종 주행명령 발행 안 함.
+
+### NCNN 변환 + 레이턴시 실측 ⭐ (07-05, D3-G 보드 CPU 4코어)
+- 테스트 모델 다운로드(`scripts/download_test_models.sh`) → `models/yolo_{detect,seg}_test.pt`.
+- Ultralytics YOLO26n 계열을 **NCNN으로 export** (imgsz **320 고정**): `models/*_ncnn_model/`.
+- 벤치: `scripts/bench_seg.py`(torch/ncnn 공통, `YOLO(dir)`로 ncnn 로드). imgsz 320, 20 runs, warmup 3.
+
+| 모델 | 포맷 | p50 latency | 평균 FPS |
+|------|------|-------------|----------|
+| seg    | torch | 212 ms | 4.6 |
+| seg    | **ncnn** | 115 ms | **8.6** |
+| seg    | ncnn(OMP4) | 105 ms | 9.0 |
+| detect | torch | 157 ms | 6.1 |
+| detect | **ncnn** | 65 ms | **14.3** |
+
+- **결론**: 보드 인지는 **무조건 NCNN**(torch 대비 ~2배). OMP 스레드 증량은 NCNN 내부 멀티스레딩과 겹쳐 이득 미미. detect(~14FPS) ≫ seg(~9FPS). 차선 segmentation 채택 시 실질 상한 ≈ **9 FPS @320** — 폐루프 제어엔 빠듯하나 사용 가능.
+- **주의**: NCNN export가 imgsz 320에 고정되어 있음. 다른 해상도 쓰려면 재export 필요.
 
 ---
 

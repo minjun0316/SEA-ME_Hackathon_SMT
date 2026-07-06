@@ -1,0 +1,17 @@
+# @file mission.yaml
+# @brief 상위 미션 시퀀스(MissionSequencer) 파라미터.
+#
+# 미션 페이즈 SM(M0~M6)의 전이 임계값과 원 지름길 갈림길 좌/우 지정.
+# 좌·우와 거리 임계값은 트랙마다 다르므로 전부 여기서 수정한다.
+# 자세한 시퀀스: docs/mission_fsm.md
+
+mission:
+  # --- 원 지름길(M2) 갈림길 좌/우 (⚠️ 대회장서 확정) ---
+  circle_loop_side: LEFT    # 정지선 count==1 → 이 방향으로 조향(원 계속). LEFT/RIGHT.
+  circle_exit_side: RIGHT   # count==2 → 이 방향으로 조향(탈출). loop의 반대여야 함.
+
+  # --- 정지선 카운트 디바운스 ---
+  stop_line_debounce: 1.0   # 정지선 count 사이 최소 간격 [s] (같은 선 중복 카운트 방지).
+
+  # --- 정지 구역(M6) ---
+  stop_zone_stop_dist: 0.20 # 정지구역이 이 거리 이내면 M6 진입·정지 [m].

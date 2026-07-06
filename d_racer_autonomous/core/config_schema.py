@@ -89,6 +89,87 @@ class SpeedConfig:
 
 
 @dataclass
+class DecisionConfig:
+    """@brief 판단(State Machine) 임계값/배율 파라미터.
+
+    @details 판단은 제어기 튜닝값(controller.yaml)을 건드리지 않고 상태별
+    "배율/게이트"만 정한다(계약 docs/interfaces.md §4.4). 여기의 값들은 상태
+    전이 임계값과 각 상태에서 내보낼 speed_scale/lookahead_scale이다.
+    시간 임계값은 초[s] 단위이며 update(obs, dt)의 dt로 누적된다.
+    """
+
+    # --- 유효 검출 판정 ---
+    min_points: int = 2              ##< lane_path 최소 점 개수(미만이면 미검출 취급).
+    conf_min: float = 0.35           ##< 이 신뢰도 미만이면 미검출 취급(→ grace 후 LOST).
+    conf_drive: float = 0.60         ##< 이 이상이면 정상 DRIVE 후보. 미만이면 SLOW.
+    # --- 소실/복귀 타이머 ---
+    lost_grace: float = 0.30         ##< 미검출이 이 시간 이상 지속되면 LOST[s].
+    recover_grace: float = 0.10      ##< INIT/LOST 탈출에 필요한 연속 유효검출 시간[s].
+    # --- 감속(SLOW) 유발 조건 ---
+    heading_slow: float = 0.35       ##< |heading_error|가 이 값 이상이면 SLOW[rad](~20°).
+    offset_slow: float = 0.12        ##< |lateral_offset|가 이 값 이상이면 SLOW[m].
+    # --- 정지선 ---
+    stop_trigger_dist: float = 0.25  ##< 정지선이 이 거리 이내면 STOP[m].
+    stop_approach_dist: float = 0.60 ##< 정지선이 이 거리 이내면 접근 감속 SLOW[m].
+    stop_dwell: float = 2.0          ##< STOP 유지 시간[s]. 이후 정지선 유지돼도 재출발.
+    # --- 상태별 출력 배율 ---
+    drive_speed_scale: float = 1.0   ##< DRIVE 속도 배율.
+    slow_speed_scale: float = 0.5    ##< SLOW 속도 배율.
+    slow_lookahead_scale: float = 0.8 ##< SLOW lookahead 배율(코너서 가까이).
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DecisionConfig":
+        return cls(**_filter_known(cls, data or {}))
+
+
+@dataclass
+class MissionConfig:
+    """@brief 상위 미션 시퀀스(MissionSequencer) 파라미터.
+
+    @details 미션 페이즈 SM(M0~M6)의 전이 임계값과 갈림길 좌/우 지정. 좌·우와
+    거리 임계값은 트랙에 따라 달라지므로 전부 여기(YAML)에 둔다. 자세한 시퀀스는
+    docs/mission_fsm.md 참조.
+    """
+
+    # --- 원 지름길(M2) 갈림길 좌/우 (대회장 확정) ---
+    circle_loop_side: str = "LEFT"   ##< 정지선 count==1일 때 틀 방향(원 계속). LEFT/RIGHT.
+    circle_exit_side: str = "RIGHT"  ##< count==2일 때 틀 방향(탈출). circle_loop_side의 반대.
+    # --- 정지선 카운트 디바운스 ---
+    stop_line_debounce: float = 1.0  ##< 정지선 count 사이 최소 간격[s](같은 선 중복 카운트 방지).
+    # --- 정지 구역(M6) ---
+    stop_zone_stop_dist: float = 0.20  ##< 정지구역이 이 거리 이내면 M6 진입·정지[m].
+
+    def _side(self, value: str) -> "TurnHint":
+        """@brief 'LEFT'/'RIGHT' 문자열을 TurnHint로 변환."""
+        from .planning.decision import TurnHint
+        key = str(value).strip().upper()
+        if key == "LEFT":
+            return TurnHint.LEFT
+        if key == "RIGHT":
+            return TurnHint.RIGHT
+        raise ValueError(f"MissionConfig: side must be LEFT/RIGHT, got {value!r}")
+
+    def loop_side(self) -> "TurnHint":
+        """@brief count==1(원 계속) 조향 힌트."""
+        return self._side(self.circle_loop_side)
+
+    def exit_side(self) -> "TurnHint":
+        """@brief count>=2(탈출) 조향 힌트."""
+        return self._side(self.circle_exit_side)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MissionConfig":
+        cfg = cls(**_filter_known(cls, data or {}))
+        # 값 검증(오타 즉시 발견) + 좌/우가 서로 반대인지 확인.
+        loop, exit_ = cfg.loop_side(), cfg.exit_side()
+        if loop == exit_:
+            raise ValueError(
+                "MissionConfig: circle_loop_side와 circle_exit_side는 서로 반대여야 함 "
+                f"(loop={cfg.circle_loop_side}, exit={cfg.circle_exit_side})")
+        return cfg
+
+
+@dataclass
 class BatteryConfig:
     """@brief 배터리 전압 보정 파라미터."""
 
@@ -127,6 +208,8 @@ class AppConfig:
     vehicle: VehicleConfig = field(default_factory=VehicleConfig)
     pure_pursuit: PurePursuitConfig = field(default_factory=PurePursuitConfig)
     speed: SpeedConfig = field(default_factory=SpeedConfig)
+    decision: DecisionConfig = field(default_factory=DecisionConfig)
+    mission: MissionConfig = field(default_factory=MissionConfig)
     battery: BatteryConfig = field(default_factory=BatteryConfig)
     sim: SimConfig = field(default_factory=SimConfig)
 
@@ -137,6 +220,8 @@ class AppConfig:
             vehicle=VehicleConfig.from_dict(data.get("vehicle", {})),
             pure_pursuit=PurePursuitConfig.from_dict(data.get("pure_pursuit", {})),
             speed=SpeedConfig.from_dict(data.get("speed", {})),
+            decision=DecisionConfig.from_dict(data.get("decision", {})),
+            mission=MissionConfig.from_dict(data.get("mission", {})),
             battery=BatteryConfig.from_dict(data.get("battery", {})),
             sim=SimConfig.from_dict(data.get("sim", {})),
         )
@@ -148,7 +233,7 @@ def load_config(*yaml_paths: str) -> AppConfig:
     @param yaml_paths 읽을 YAML 경로들. 뒤쪽 파일이 앞쪽을 덮어쓴다(merge).
     @return 검증된 AppConfig.
 
-    @note 최상위 키(vehicle/pure_pursuit/speed/battery/sim) 단위로 얕게
+    @note 최상위 키(vehicle/pure_pursuit/speed/decision/mission/battery/sim) 단위로 얕게
           병합한다. 같은 섹션의 일부 키만 override 하려면 해당 섹션 전체를
           한 파일에 두는 것을 권장한다.
     """

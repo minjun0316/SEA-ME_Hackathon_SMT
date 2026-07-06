@@ -1,0 +1,29 @@
+# @file decision.yaml
+# @brief 판단(Decision State Machine) 임계값/배율 파라미터.
+#
+# 판단은 제어기 튜닝값(controller.yaml)을 건드리지 않고 상태별 "배율/게이트"만
+# 정한다(계약 docs/interfaces.md §4.4). 시간 임계값은 초[s] 단위.
+
+decision:
+  # --- 유효 검출 판정 ---
+  min_points: 2            # lane_path 최소 점 개수(미만이면 미검출 취급).
+  conf_min: 0.35           # 이 신뢰도 미만이면 미검출 취급(→ grace 후 LOST).
+  conf_drive: 0.60         # 이 이상이면 정상 DRIVE. 미만이면 SLOW.
+
+  # --- 소실/복귀 타이머 ---
+  lost_grace: 0.30         # 미검출이 이 시간 이상 지속되면 LOST [s].
+  recover_grace: 0.10      # INIT/LOST 탈출에 필요한 연속 유효검출 시간 [s].
+
+  # --- 감속(SLOW) 유발 조건 ---
+  heading_slow: 0.35       # |heading_error| 이상이면 SLOW [rad] (~20deg).
+  offset_slow: 0.12        # |lateral_offset| 이상이면 SLOW [m].
+
+  # --- 정지선 ---
+  stop_trigger_dist: 0.25  # 정지선이 이 거리 이내면 STOP [m].
+  stop_approach_dist: 0.60 # 정지선이 이 거리 이내면 접근 감속 SLOW [m].
+  stop_dwell: 2.0          # STOP 유지 시간 [s]. 이후 정지선 유지돼도 재출발.
+
+  # --- 상태별 출력 배율 ---
+  drive_speed_scale: 1.0   # DRIVE 속도 배율.
+  slow_speed_scale: 0.5    # SLOW 속도 배율.
+  slow_lookahead_scale: 0.8 # SLOW lookahead 배율(코너서 가까이).
