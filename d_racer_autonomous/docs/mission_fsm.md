@@ -1,161 +1,104 @@
-# D-Racer 미션 판단(Decision) 상태 다이어그램
+# D-Racer 미션 상태기계 (로터리 지름길, 12-state)
 
-> 작성 2026-07-05. 이 문서는 **대회 미션 시퀀스를 판단(decision) 상태기계로** 정리한다.
-> 아직 **미확정 항목(⚠️)** 이 있으며, 확정되면 이 문서를 먼저 갱신하고 코드를 맞춘다.
->
-> 관련 문서: 노드 계약 `interfaces.md`, 설계 전반 `architecture.md`, 진행상황 `../PROGRESS.md`.
-
----
-
-## 1. 미션 시퀀스 (요구사항)
-
-```
-① 출발점: 신호등 대기 → 초록불 → 출발
-② 흰 차선 추종(직진)
-③ 노랑 차선 = 원형 지름길 입구로 진입
-④ 원을 딱 한 바퀴만 돌고 → 출구(점선)로 복귀       ★핵심 난제
-⑤ 흰 차선 추종
-⑥ 동적 장애물 1회 처리
-⑦ 흰 차선 추종 → 원래 출발점 도착 → 종료
-```
-
-- **차선 색**: 원형 지름길 = **노랑**, 나머지 = **흰색**.
-- **바닥 구역 색**: 동적 장애물(⑥) 구간 = **빨강**(바닥에 칠해진 구역, 따라가는 선 아님).
-  이 구역 안에서도 흰 차선은 계속 따라간다.
-- **인지 분담**: 객체(신호등·동적장애물=아루코) = **YOLO/aruco**, 차선·바닥구역 = **OpenCV**.
-- **원 지름길 규칙**: 그냥 통과 금지. 반드시 **한 바퀴** 돌고 나온다.
+> 작성 2026-07-05, 개정 2026-07-06(트랙 상세 반영: 12-state, 첫 정지선=오른쪽/둘째=왼쪽).
+> 대회 미션을 **상위 미션 SM(MissionSequencer)** 로 정리한다. 구현: `core/planning/mission.py`.
+> 관련: 계약 `interfaces.md`, 합의 `perception_agreement.md`, 진행 `../PROGRESS.md`.
 
 ---
 
-## 2. 설계: 2계층 상태기계
+## 1. 미션 개요 (트랙)
 
-- **상위 = 미션 페이즈 SM** — "지금 미션 어디쯤인지"(§3).
-- **하위 = 반응형 주행 SM** — 각 주행 페이즈 안에서 DRIVE/SLOW/STOP/LOST(§4).
-  - 하위 로직은 이미 구현됨: `core/planning/decision.py`(초안), `DecisionConfig`.
-- **판단 원칙**: 제어기 튜닝(controller.yaml)은 건드리지 않고 **상태 + 배율/게이트**만 낸다
-  (계약 `interfaces.md §4.4` DriveCommand).
+전체 외곽을 도는 게 아니라, 하단 직선에서 **중앙 원형 로터리로 올라가는 노란 지름길**을 쓴다.
+
+```
+출발(체커보드) → 하단 직선(흰) → 노란 지름길 → 로터리(노랑)
+  → [정지선 1회: 오른쪽 원형으로 계속] → 한 바퀴 → [정지선 2회: 왼쪽 출구로 탈출]
+  → 노란 점선/연결도로 → 흰 외곽도로 → 오른쪽 빨강 장애물 구간(아루코)
+  → 하단 복귀 → 도착(체커보드) 정지
+```
+
+- **색**: 지름길·로터리·탈출 연결도로 = **노랑**, 외곽 = **흰**, 장애물 바닥 구역 = **빨강**.
+- **한 바퀴 판정**: yaw 누적각 X, **로터리 내부 정지선 검출 횟수만** 사용.
+- **분담**: 신호등·체커보드=YOLO, 차선/색/정지선/빨강=OpenCV, 아루코=cv2.aruco.
 
 ---
 
-## 3. 상위: 미션 페이즈 상태 다이어그램
+## 2. 2계층 구조
 
-```
-                    ┌────────────────────┐
-                    │   M0  WAIT_GREEN    │   출력: STOP (go=false, 정지 대기)
-                    └─────────┬──────────┘
-                     YOLO 신호등 == GREEN
-                              ▼
-                    ┌────────────────────┐
-                    │  M1  LANE_WHITE_1   │   출력: 흰 차선 추종 (DRIVE)
-                    └─────────┬──────────┘
-        흰→노랑 전환(지름길 진입) → 노란 직선 조금 → 갈림길
-                              ▼
-   ┌──────────────────────────────────────────────────────┐
-   │  M2  CIRCLE            [진입 시 stopline_count = 0]      │  출력: 노랑 선 추종
-   │                                                        │
-   │   ┌── 정지선(갈림길) rising-edge ──▶ count += 1          │
-   │   │                                                    │
-   │   │   count == 1 ──▶ loop쪽 조향 nudge (원 계속) ──┐     │
-   │   │   count == 2 ──▶ exit쪽 조향 nudge (탈출)      │     │
-   │   └──────────◀──── 원 한 바퀴 ──────────────────┘     │
-   │                                                        │
-   │   ※ 양쪽 다 노랑·곡률 동일 → 색/곡률로 구분 불가            │
-   │   ※ loop/exit = 좌·우 = YAML(대회장 확정), count가 택1     │
-   └──────────────────────┬───────────────────────────────┘
-     count==2 → 노란 직선 → 커브(좌점선/우실선) → 노랑→흰 전환
-                              ▼
-                    ┌────────────────────┐
-                    │  M3  LANE_WHITE_2   │   출력: 흰 차선 추종 (DRIVE)
-                    └─────────┬──────────┘
-                    빨강 구역(red_zone) 검출 = 장애물 구역 진입
-                              ▼
-   ┌──────────────────────────────────────────────────────┐
-   │  M4  OBSTACLE   (빨강 바닥 구역 안. 흰 차선은 계속 추종)     │
-   │     · aruco 보임   → STOP (마커 보이는 동안 정지)          │
-   │     · aruco 안보임 → 그대로 흰 차선 추종(DRIVE)            │
-   └──────────────────────┬───────────────────────────────┘
-                 빨강 구역 벗어남(red_zone 사라짐) → M5
-                              ▼
-                    ┌────────────────────┐
-                    │  M5  LANE_WHITE_3   │   출력: 흰 차선 추종 (DRIVE)
-                    └─────────┬──────────┘
-              YOLO 정지구역 검출 → 접근 → 4바퀴 위 정지
-                              ▼
-                    ┌────────────────────┐
-                    │   M6  FINISH        │   출력: STOP (미션 종료)
-                    └────────────────────┘
-```
-
-### M2 CIRCLE — "딱 한 바퀴" 판정 + 분기 (핵심)
-
-**지름길 전체 모양(노랑 구간):**
-```
-흰 → [노란 직선 조금] → 갈림길(정지선) → [원 한 바퀴] → 갈림길(정지선)
-   → [노란 직선 조금] → 커브(좌 점선 / 우 실선) → 노랑→흰 전환 → 흰(M3)
-```
-
-- **지름길 안/밖 = 색으로 판정**: 흰→노랑 = 진입(M2 시작), 노랑→흰 = 탈출(M2 끝, M3 시작).
-- **정지선 = 갈림길(fork)**. 양쪽 갈래 **둘 다 노랑, 곡률도 동일** → 색/곡률로 구분 불가.
-- **한 바퀴 판정(정지선 카운트)**: 첫 정지선에서 바로 나가면 "진입→출구" 호만 돌아 한 바퀴가
-  안 됨 → 첫 정지선은 스킵(count=1), 한 바퀴 더 돌아 **두 번째** 정지선에서 탈출(count=2)
-  → 그 사이가 정확히 한 바퀴.
-  - 전제(확인 필요): 진입 직선이 정지선 **바로 직전**이어야 count=2 = 딱 한 바퀴.
-- **분기 선택 = 좌/우 조향 nudge** (색 아님 ⚠️): 갈림길 두 갈래가 같은 노랑·같은 곡률이라
-  카메라로 구분 불가 → count에 따라 정해진 쪽으로 **조향을 살짝 틀어** 갈래를 잡는다.
-  - count==1 → loop 쪽, count==2 → exit 쪽.
-  - loop/exit가 물리적으로 좌·우 어느 쪽인지는 **대회장 확정 → YAML 파라미터**
-    (`circle_loop_side`, `circle_exit_side`; 서로 반대).
-- 견고성: 정지선은 두꺼워 여러 프레임 잡히므로 **엣지 트리거**(False→True 순간만 +1) +
-  같은 정지선 재검출 **디바운스**(카운트 간 최소 간격).
+- **상위 = 미션 SM(12-state)** — "지금 미션 어디쯤인지" + **인지 지시**(follow_color/roi_mode/turn_bias).
+- **하위 = 반응형 SM** — 각 주행 상태 안에서 DRIVE/SLOW/STOP/LOST (`core/planning/decision.py`).
+- **역할 경계**: ROI 자르기·mask·target·bias·아루코 검출은 **인지 몫**. 상위는 지시만, 하위는 눈앞 반응만.
 
 ---
 
-## 4. 하위(안전) 오버레이 — 모든 주행 페이즈(M1·M2·M3·M5) 공통
+## 3. 12-state 상태 다이어그램
 
 ```
-  차선 신뢰도 낮음 → SLOW          |  DRIVE ⇄ SLOW (속도배율만 조정)
-  차선 소실 > lost_grace → LOST    |  → 정지, 조향 마지막값 유지 (fail-safe)
-  차선 복귀 > recover_grace → 주행 복귀
+ WAIT_START_SIGNAL   (정지)      ── 초록불(YOLO) ──▶ START_STRAIGHT
+ START_STRAIGHT      (흰,LOWER)  ── 노랑 검출 ──▶ SHORTCUT_APPROACH
+ SHORTCUT_APPROACH   (노랑,LOWER,감속) ── 타이머 ──▶ ROUNDABOUT_ENTRY
+ ROUNDABOUT_ENTRY    (노랑,FULL,정지선무시) ── 타이머(ignore) ──▶ ROUNDABOUT_FOLLOW
+ ROUNDABOUT_FOLLOW   (노랑,FULL,정지선 카운트)
+        │  1번째 정지선(count=1) ──▶ ROUNDABOUT_CONTINUE_RIGHT
+        │  2번째 정지선(count=2) ──▶ ROUNDABOUT_EXIT_LEFT
+ ROUNDABOUT_CONTINUE_RIGHT (노랑,RIGHT ROI,turn=RIGHT) ── 타이머 ──▶ ROUNDABOUT_FOLLOW
+ ROUNDABOUT_EXIT_LEFT      (노랑,LEFT ROI,turn=LEFT)   ── 타이머 ──▶ EXIT_CONNECTOR
+ EXIT_CONNECTOR      (노랑,LEFT,점선 크립) ── 흰색 안정 검출 ──▶ OUTER_LANE_FOLLOW
+ OUTER_LANE_FOLLOW   (흰,FULL)   ── 빨강 구역 ──▶ DYNAMIC_OBSTACLE_ZONE
+ DYNAMIC_OBSTACLE_ZONE (흰,LOWER_ARUCO,감속)
+        │  아루코 보임 → STOP,  안 보임 → 주행
+        └─ 빨강 벗어남 ──▶ FINISH_APPROACH
+ FINISH_APPROACH     (흰,LOWER)  ── 체커보드(YOLO) ──▶ FINISH_STOP
+ FINISH_STOP         (정지, 종료)
 ```
 
-M1/M3/M5는 "흰 차선 추종" 페이즈, M2는 "노랑 차선 추종" 페이즈이며, 각 페이즈 **안에서**
-반응형으로 DRIVE/SLOW/LOST가 동작한다.
+### 정지선 처리 (핵심)
+- `roundabout_stopline_count` 초기 0. **ROUNDABOUT_FOLLOW에서만** 카운트.
+- 1번째(0→1): **왼쪽 출구 무시, 오른쪽 원형 차선으로 계속** → CONTINUE_RIGHT.
+- 2번째(→2): **오른쪽 버리고 왼쪽 출구로 탈출** → EXIT_LEFT.
+- **중복 방지**: rising-edge(False→True) + `stopline_debounce_sec`(1.5~2.0s).
+- **오검출 방지**: 진입 직후 `stopline_ignore_after_entry_sec` 동안 무시(ROUNDABOUT_ENTRY 지속).
+- CONTINUE_RIGHT/EXIT_LEFT 중에는 카운트하지 않음.
+
+### 탈출 후 (커넥터)
+- 탈출하면 바로 흰색이 아니라 **노란 점선 → 노란 연결도로 → 흰색** 순.
+- EXIT_CONNECTOR에서 노랑 계속 추종, **흰색이 `white_stable_sec` 이상 안정 검출**되면 OUTER.
+- 점선 구간은 검출 끊겨도 **정지 금지**(왼쪽 저속 크립, target 유지는 인지 몫).
 
 ---
 
-## 5. 결정 사항 / 남은 확인
+## 4. 인지 지시 (상태 → LaneMode) 요약
 
-**확정(2026-07-05):**
-- **장애물(M4)** = **빨강 바닥 구역 + 아루코 마커** 조합. **빨강 구역**(OpenCV 색검출)이
-  M4 진입/탈출(공간)을 정하고, **아루코 마커**(`cv2.aruco`)가 그 안에서 정지/재출발(순간)을
-  정한다. 빨강 구역 안에서도 흰 차선은 계속 추종(follow_color=WHITE). aruco 안 보이면 그대로
-  주행, 보이는 동안만 STOP.
-- **출발점 도착(M6)** = **YOLO로 "정지 구역" 학습** → 그 위에 **네 바퀴 다** 올라가게 정지.
-- **원 갈림길 분기** = 양쪽 노랑·동일 곡률이라 구분 불가 → **count에 따라 좌/우 조향 nudge**로
-  갈래 선택. loop/exit의 물리적 좌·우는 **대회장 확정 → YAML**(`circle_loop_side`/`circle_exit_side`).
-- **지름길 안/밖** = 색으로 판정(흰↔노랑). 진입/탈출 구간에 노란 직선 + 탈출 커브(좌점선/우실선).
+| 상태 | follow_color | roi_mode | turn_bias |
+|------|:---:|:---:|:---:|
+| START_STRAIGHT | WHITE | LOWER | - |
+| SHORTCUT_APPROACH | YELLOW | LOWER | - |
+| ROUNDABOUT_ENTRY/FOLLOW | YELLOW | FULL | - |
+| ROUNDABOUT_CONTINUE_RIGHT | YELLOW | RIGHT | RIGHT |
+| ROUNDABOUT_EXIT_LEFT | YELLOW | LEFT | LEFT |
+| EXIT_CONNECTOR | YELLOW | LEFT | LEFT |
+| OUTER_LANE_FOLLOW | WHITE | FULL | - |
+| DYNAMIC_OBSTACLE_ZONE | WHITE | LOWER_ARUCO | - |
 
-**남은 확인(코드 전 정리):**
-| # | 위치 | 확인 사항 |
-|---|------|-----------|
-| A | M2 | 진입 지점이 출구 정지선 **바로 직전**인지(그래야 count=2=한 바퀴) |
-| B | M6 | 정지구역 **4바퀴 정지 정밀도** — 차가 구역 위 올라가면 카메라 사각 → "보일 때까지 접근 후 남은 거리 데드레커닝" 방식 별도 설계 필요 |
-| C | 계약 | 아래 §6 신규 신호를 인지팀과 합의 |
+(WAIT_START_SIGNAL·FINISH_STOP = 정지, FINISH_APPROACH = WHITE/LOWER.)
 
 ---
 
-## 6. 인터페이스 확장 필요 항목 (인지팀과 합의)
+## 5. 하위 반응형 오버레이 (주행 상태 공통)
 
-미션을 위해 `interfaces.md` 계약에 아래 신호가 **신규** 필요:
+각 주행 상태 안에서 아래층이 동작: 차선 신뢰도↓→SLOW, 소실>grace→LOST(정지·조향유지),
+복귀>recover_grace→주행. 상위는 여기에 감속(slow_speed_scale)·짧은 lookahead
+(roundabout_lookahead_scale)만 얹는다. 로터리 정지선은 카운트 전용이라 아래층엔 마스킹.
 
-- `traffic_light`: NONE/RED/GREEN (YOLO) — M0 출발 트리거
-- 차선 색 추종 **모드 스위치**: "노랑 따라 / 흰 따라" (OpenCV) — 페이즈별 대상선 전환
-- `on_yellow`(노랑 검출) / 흰↔노랑 전환: M2 진입·탈출(구간) 판정
-- `stop_line` / `stop_line_dist`: **이미 계약에 있음**(§4.3) — 원 한 바퀴 카운트(갈림길)에 재사용
-- `red_zone_detected`: (OpenCV 색검출) — M4 진입/탈출(빨강 바닥 구역) 판정
-- `aruco_present`(+선택 `aruco_dist`): (OpenCV aruco) — M4 구역 안 정지/재출발 트리거
-- `stop_zone_detected` / `stop_zone_dist`: (YOLO) — M6 접근·정지
-- fork 조향 nudge: `DriveCommand.turn_hint`(LEFT/RIGHT/NONE) — count에 따라 판단이 좌/우 지정
+---
 
-확정되면: 계약 갱신 → 상위 미션 SM 구현(`core/planning/`에 `MissionSequencer` 등) +
-얇은 `decision_node` 래핑 → controller_node에 drive_command 반영.
+## 6. 인터페이스 (계약 반영됨, interfaces.md)
+
+- 인지→판단: `lane_path`(Path) + `lane_status`(+노랑/흰 검출) + `mission_cues`(신호등/체커보드/빨강/아루코).
+- 판단→인지: `lane_mode`(follow_color/roi_mode/turn_bias) — 역방향 지시.
+- 메시지는 `racer_msgs`에 정의·빌드됨. 상세: `perception_agreement.md`.
+
+## 7. 미확정 / 트랙 실측 (🏁)
+- 갈림길 실제 좌/우(`roundabout_continue_side`/`exit_side`), 각 타이머값.
+- 진입 직선이 출구 정지선 바로 직전인지(정지선 2회=한 바퀴).
+- 장애물 "일정 프레임" 기준, 체커보드 검출 거리.

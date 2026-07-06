@@ -1,8 +1,9 @@
 """@file test_mission.py
-@brief 상위 미션 시퀀스(MissionSequencer) 단위 테스트.
+@brief 상위 미션 시퀀스(MissionSequencer, 12-state) 단위 테스트.
 
-각 페이즈 전이(M0~M6)와 미션 지시(follow_color/turn_hint), 그리고 아래층
-반응형 SM과의 합성(정지 페이즈 STOP 강제, M2 정지선 마스킹)을 검증한다.
+로터리 지름길 미션의 페이즈 전이(WAIT_START~FINISH_STOP), 정지선 카운트
+(1번째=오른쪽 계속, 2번째=왼쪽 탈출), 진입무시, EXIT_CONNECTOR 흰색 안정,
+그리고 인지 지시(follow_color/roi_mode/turn_hint)를 검증한다.
 설계: docs/mission_fsm.md
 """
 import os
@@ -17,6 +18,7 @@ from core.planning import (
     MissionObservation,
     MissionPhase,
     MissionSequencer,
+    RoiMode,
     TrafficLight,
     TurnHint,
 )
@@ -24,8 +26,16 @@ from core.planning import (
 _CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
 
 
+def _cfg(**kw):
+    """테스트용: 타이머를 짧게 줄여 전이 검증을 빠르게."""
+    base = dict(shortcut_approach_sec=0.1, stopline_ignore_after_entry_sec=0.1,
+                stopline_debounce_sec=0.2, continue_right_sec=0.1,
+                exit_left_sec=0.1, white_stable_sec=0.1)
+    base.update(kw)
+    return MissionConfig(**base)
+
+
 def _lane(**kw):
-    """정상 주행에 충분한 차선 관측(필요 필드만 override)."""
     base = dict(lane_detected=True, confidence=0.9, num_points=20,
                 lateral_offset=0.0, heading_error=0.0,
                 stop_line=False, stop_line_dist=-1.0, stop_request=False)
@@ -34,214 +44,253 @@ def _lane(**kw):
 
 
 def _obs(lane=None, **kw):
-    """미션 관측 묶음. lane 미지정 시 정상 주행 차선."""
     return MissionObservation(lane=lane if lane is not None else _lane(), **kw)
 
 
-# --- 특정 페이즈까지 밀어넣는 헬퍼들 --------------------------------------
-
-def _drive(seq, color=LaneColor.WHITE, n=5, **kw):
-    """유효 차선을 n주기 먹여 아래층을 DRIVE로 만든다. 마지막 명령 반환."""
+def _tick(seq, n=3, dt=0.05, **kw):
+    """n주기 update. 마지막 명령 반환."""
     cmd = None
     for _ in range(n):
-        cmd = seq.update(_obs(lane_color=color, **kw), dt=0.05)
+        cmd = seq.update(_obs(**kw), dt=dt)
     return cmd
 
 
-def _at_m1(seq):
+# --- 페이즈까지 밀어넣는 헬퍼 --------------------------------------------
+
+def _to_start(seq):
     seq.update(_obs(traffic_light=TrafficLight.GREEN), dt=0.1)
-    _drive(seq)
-    assert seq.phase == MissionPhase.M1_LANE_WHITE_1
+    _tick(seq)  # 흰 주행 DRIVE로.
+    assert seq.phase == MissionPhase.START_STRAIGHT
 
 
-def _at_m2(seq):
-    _at_m1(seq)
-    _drive(seq, color=LaneColor.YELLOW)   # 흰→노랑 전환 → M2, 노랑 추종 주행
-    assert seq.phase == MissionPhase.M2_CIRCLE
+def _to_shortcut(seq):
+    _to_start(seq)
+    seq.update(_obs(yellow_detected=True), dt=0.05)
+    assert seq.phase == MissionPhase.SHORTCUT_APPROACH
 
 
-def _at_m3(seq):
-    _at_m2(seq)
-    _drive(seq, color=LaneColor.WHITE)    # 노랑→흰 전환 → M3
-    assert seq.phase == MissionPhase.M3_LANE_WHITE_2
+def _to_entry(seq):
+    _to_shortcut(seq)
+    _tick(seq, n=3, yellow_detected=True)  # shortcut_approach_sec(0.1) 경과.
+    assert seq.phase == MissionPhase.ROUNDABOUT_ENTRY
 
 
-def _at_m4(seq):
-    _at_m3(seq)
-    seq.update(_obs(red_zone_detected=True), dt=0.05)   # 빨강 구역 진입 → M4
-    assert seq.phase == MissionPhase.M4_OBSTACLE
+def _to_follow(seq):
+    _to_entry(seq)
+    _tick(seq, n=3, yellow_detected=True)  # 진입무시(0.1) 경과.
+    assert seq.phase == MissionPhase.ROUNDABOUT_FOLLOW
 
 
-def _at_m5(seq):
-    _at_m4(seq)
-    seq.update(_obs(red_zone_detected=False), dt=0.05)  # 구역 벗어남 → M5
-    _drive(seq)
-    assert seq.phase == MissionPhase.M5_LANE_WHITE_3
+def _stopline_obs(**kw):
+    return _obs(lane=_lane(stop_line=True, stop_line_dist=0.3), yellow_detected=True, **kw)
 
 
-# --- M0 ------------------------------------------------------------------
+# --- WAIT_START / START --------------------------------------------------
 
-def test_starts_in_m0_and_stops():
-    seq = MissionSequencer()
-    cmd = seq.update(_obs(), dt=0.1)   # 차선 보여도 신호 대기 → STOP
-    assert seq.phase == MissionPhase.M0_WAIT_GREEN
-    assert cmd.state == DriveState.STOP
-    assert cmd.go is False
-
-
-def test_m0_holds_until_green():
-    seq = MissionSequencer()
-    seq.update(_obs(traffic_light=TrafficLight.RED), dt=0.1)
-    assert seq.phase == MissionPhase.M0_WAIT_GREEN
-    seq.update(_obs(traffic_light=TrafficLight.GREEN), dt=0.1)
-    assert seq.phase == MissionPhase.M1_LANE_WHITE_1
+def test_starts_waiting_and_stops():
+    seq = MissionSequencer(_cfg())
+    cmd = seq.update(_obs(), dt=0.1)
+    assert seq.phase == MissionPhase.WAIT_START_SIGNAL
+    assert cmd.state == DriveState.STOP and cmd.go is False
 
 
-# --- M1 ------------------------------------------------------------------
-
-def test_m1_follows_white_and_drives():
-    seq = MissionSequencer()
-    _at_m1(seq)
-    cmd = _drive(seq)
+def test_green_starts_driving_white():
+    seq = MissionSequencer(_cfg())
+    _to_start(seq)
+    cmd = _tick(seq)
     assert cmd.follow_color == LaneColor.WHITE
-    assert cmd.turn_hint == TurnHint.NONE
+    assert cmd.roi_mode == RoiMode.LOWER
     assert cmd.go is True
 
 
-def test_m1_to_m2_on_yellow():
-    seq = MissionSequencer()
-    _at_m1(seq)
-    cmd = seq.update(_obs(lane_color=LaneColor.YELLOW), dt=0.05)
-    assert seq.phase == MissionPhase.M2_CIRCLE
+def test_yellow_triggers_shortcut():
+    seq = MissionSequencer(_cfg())
+    _to_start(seq)
+    cmd = seq.update(_obs(yellow_detected=True), dt=0.05)
+    assert seq.phase == MissionPhase.SHORTCUT_APPROACH
     assert cmd.follow_color == LaneColor.YELLOW
 
 
-# --- M2 원 지름길 ---------------------------------------------------------
+# --- 로터리 진입/무시시간 -------------------------------------------------
 
-def test_m2_stop_line_count_sets_turn_hint():
-    seq = MissionSequencer()   # 기본: loop=LEFT, exit=RIGHT
-    _at_m2(seq)
-    # 아직 정지선 전 → 힌트 없음.
-    c0 = seq.update(_obs(lane_color=LaneColor.YELLOW), dt=0.05)
-    assert c0.turn_hint == TurnHint.NONE
-    # 첫 정지선(rising edge) → count 1 → loop 쪽(LEFT).
-    c1 = seq.update(_obs(lane_color=LaneColor.YELLOW,
-                         lane=_lane(stop_line=True, stop_line_dist=0.3)), dt=0.05)
-    assert seq.stopline_count == 1
-    assert c1.turn_hint == TurnHint.LEFT
-    # 정지선 사라지고 디바운스 시간 경과.
-    seq.update(_obs(lane_color=LaneColor.YELLOW), dt=1.0)
-    # 두 번째 정지선 → count 2 → exit 쪽(RIGHT).
-    c2 = seq.update(_obs(lane_color=LaneColor.YELLOW,
-                         lane=_lane(stop_line=True, stop_line_dist=0.3)), dt=0.05)
-    assert seq.stopline_count == 2
-    assert c2.turn_hint == TurnHint.RIGHT
+def test_entry_then_follow_via_timers():
+    seq = MissionSequencer(_cfg())
+    _to_entry(seq)
+    assert seq.phase == MissionPhase.ROUNDABOUT_ENTRY
+    _tick(seq, n=3, yellow_detected=True)
+    assert seq.phase == MissionPhase.ROUNDABOUT_FOLLOW
 
 
-def test_m2_stop_line_debounced():
-    """같은 정지선이 여러 프레임 잡혀도 한 번만 카운트."""
-    seq = MissionSequencer()
-    _at_m2(seq)
-    stop = dict(lane_color=LaneColor.YELLOW,
-                lane=_lane(stop_line=True, stop_line_dist=0.3))
-    for _ in range(5):   # 같은 정지선 연속 유지
-        seq.update(_obs(**stop), dt=0.05)
-    assert seq.stopline_count == 1
-
-
-def test_m2_fork_stop_line_does_not_stop_car():
-    """M2 정지선은 갈림길 표식일 뿐 → 차는 멈추지 않고 통과."""
-    seq = MissionSequencer()
-    _at_m2(seq)
-    cmd = seq.update(_obs(lane_color=LaneColor.YELLOW,
-                          lane=_lane(stop_line=True, stop_line_dist=0.05)), dt=0.05)
-    assert cmd.state != DriveState.STOP
-    assert cmd.go is True
-
-
-def test_m2_to_m3_on_white():
-    seq = MissionSequencer()
-    _at_m2(seq)
-    seq.update(_obs(lane_color=LaneColor.WHITE), dt=0.05)
-    assert seq.phase == MissionPhase.M3_LANE_WHITE_2
-
-
-# --- M3 → M4 빨강 구역 ----------------------------------------------------
-
-def test_m3_to_m4_on_red_zone():
-    seq = MissionSequencer()
-    _at_m3(seq)
-    seq.update(_obs(red_zone_detected=True), dt=0.05)
-    assert seq.phase == MissionPhase.M4_OBSTACLE
-
-
-def test_m4_stops_on_aruco_else_drives():
-    seq = MissionSequencer()
-    _at_m4(seq)
-    # 아루코 보임 → STOP.
-    c_stop = seq.update(_obs(red_zone_detected=True, aruco_present=True), dt=0.05)
-    assert c_stop.state == DriveState.STOP
-    assert c_stop.go is False
-    assert seq.phase == MissionPhase.M4_OBSTACLE   # 아직 구역 안
-    # 아루코 사라짐 → 그대로 흰 차선 주행.
-    c_go = seq.update(_obs(red_zone_detected=True, aruco_present=False), dt=0.05)
-    assert c_go.follow_color == LaneColor.WHITE
-    assert c_go.go is True
-
-
-def test_m4_to_m5_on_red_gone():
-    seq = MissionSequencer()
-    _at_m4(seq)
-    seq.update(_obs(red_zone_detected=False), dt=0.05)
-    assert seq.phase == MissionPhase.M5_LANE_WHITE_3
-
-
-# --- M5 → M6 정지 구역 ----------------------------------------------------
-
-def test_m5_to_m6_on_stop_zone_and_stops():
-    seq = MissionSequencer()
-    _at_m5(seq)
-    # 멀리 보이면 아직 M5.
-    seq.update(_obs(stop_zone_detected=True, stop_zone_dist=1.0), dt=0.05)
-    assert seq.phase == MissionPhase.M5_LANE_WHITE_3
-    # 가까우면 M6 진입 + 정지.
-    cmd = seq.update(_obs(stop_zone_detected=True, stop_zone_dist=0.1), dt=0.05)
-    assert seq.phase == MissionPhase.M6_FINISH
-    assert cmd.state == DriveState.STOP
-    assert cmd.go is False
-
-
-def test_full_sequence_reaches_finish():
-    seq = MissionSequencer()
-    _at_m5(seq)
-    cmd = seq.update(_obs(stop_zone_detected=True, stop_zone_dist=0.1), dt=0.05)
-    assert seq.phase == MissionPhase.M6_FINISH
-    assert cmd.go is False
-
-
-def test_reset_returns_to_m0():
-    seq = MissionSequencer()
-    _at_m4(seq)
-    seq.reset()
-    assert seq.phase == MissionPhase.M0_WAIT_GREEN
+def test_stopline_ignored_during_entry():
+    """진입무시 시간 동안 정지선을 봐도 카운트하지 않는다."""
+    seq = MissionSequencer(_cfg())
+    _to_entry(seq)
+    seq.update(_stopline_obs(), dt=0.02)  # ENTRY 유지(0.02<0.1), 카운트 안 함.
+    assert seq.phase == MissionPhase.ROUNDABOUT_ENTRY
     assert seq.stopline_count == 0
 
 
-# --- 설정 검증 ------------------------------------------------------------
+# --- 정지선 카운트: 1번째=오른쪽, 2번째=왼쪽 -----------------------------
 
-def test_config_rejects_same_side():
+def test_first_stopline_continues_right():
+    seq = MissionSequencer(_cfg())
+    _to_follow(seq)
+    cmd = seq.update(_stopline_obs(), dt=0.05)
+    assert seq.stopline_count == 1
+    assert seq.phase == MissionPhase.ROUNDABOUT_CONTINUE_RIGHT
+    assert cmd.turn_hint == TurnHint.RIGHT
+    assert cmd.roi_mode == RoiMode.RIGHT
+    assert cmd.follow_color == LaneColor.YELLOW
+
+
+def test_continue_right_returns_to_follow():
+    seq = MissionSequencer(_cfg())
+    _to_follow(seq)
+    seq.update(_stopline_obs(), dt=0.05)          # → CONTINUE_RIGHT
+    _tick(seq, n=3, yellow_detected=True)          # continue_right_sec(0.1) 경과
+    assert seq.phase == MissionPhase.ROUNDABOUT_FOLLOW
+
+
+def test_second_stopline_exits_left():
+    seq = MissionSequencer(_cfg())
+    _to_follow(seq)
+    # 1번째 정지선 → CONTINUE_RIGHT → 복귀.
+    seq.update(_stopline_obs(), dt=0.05)
+    seq.update(_obs(yellow_detected=True), dt=0.1)   # 선 사라짐(rising 리셋)
+    _tick(seq, n=3, yellow_detected=True)            # CONTINUE_RIGHT 종료 → FOLLOW
+    assert seq.phase == MissionPhase.ROUNDABOUT_FOLLOW
+    # debounce(0.2) 넘기고 2번째 정지선.
+    seq.update(_obs(yellow_detected=True), dt=0.2)
+    cmd = seq.update(_stopline_obs(), dt=0.05)
+    assert seq.stopline_count == 2
+    assert seq.phase == MissionPhase.ROUNDABOUT_EXIT_LEFT
+    assert cmd.turn_hint == TurnHint.LEFT
+    assert cmd.roi_mode == RoiMode.LEFT
+    assert cmd.go is True  # 탈출은 정지 아님.
+
+
+def test_stopline_debounced():
+    """같은 정지선 연속 프레임은 한 번만 카운트(→ CONTINUE_RIGHT 1회)."""
+    seq = MissionSequencer(_cfg())
+    _to_follow(seq)
+    seq.update(_stopline_obs(), dt=0.05)  # count 1 → CONTINUE_RIGHT
+    # 계속 정지선 유지해도 rising-edge 아님 → count 그대로.
+    for _ in range(4):
+        seq.update(_stopline_obs(), dt=0.02)
+    assert seq.stopline_count == 1
+
+
+# --- 탈출 커넥터 → 외곽 ---------------------------------------------------
+
+def _to_exit_left(seq):
+    _to_follow(seq)
+    seq.update(_stopline_obs(), dt=0.05)             # CONTINUE_RIGHT
+    seq.update(_obs(yellow_detected=True), dt=0.1)
+    _tick(seq, n=3, yellow_detected=True)            # FOLLOW
+    seq.update(_obs(yellow_detected=True), dt=0.2)
+    seq.update(_stopline_obs(), dt=0.05)             # EXIT_LEFT
+    assert seq.phase == MissionPhase.ROUNDABOUT_EXIT_LEFT
+
+
+def test_exit_left_to_connector_then_outer():
+    seq = MissionSequencer(_cfg())
+    _to_exit_left(seq)
+    _tick(seq, n=3, yellow_detected=True)            # exit_left_sec(0.1) → CONNECTOR
+    assert seq.phase == MissionPhase.EXIT_CONNECTOR
+    cmd = seq.update(_obs(yellow_detected=True), dt=0.05)
+    assert cmd.follow_color == LaneColor.YELLOW
+    assert cmd.roi_mode == RoiMode.LEFT
+    assert cmd.go is True  # 점선 구간, 정지 금지.
+    # 흰색 안정(white_stable_sec 0.1) 검출 → OUTER.
+    _tick(seq, n=3, white_detected=True)
+    assert seq.phase == MissionPhase.OUTER_LANE_FOLLOW
+
+
+def test_connector_creeps_even_if_lane_lost():
+    """커넥터에서 차선 소실돼도 정지하지 않고 왼쪽 저속 유지."""
+    seq = MissionSequencer(_cfg())
+    _to_exit_left(seq)
+    _tick(seq, n=3, yellow_detected=True)   # → CONNECTOR
+    cmd = seq.update(_obs(lane=LaneObservation(lane_detected=False)), dt=0.05)
+    assert cmd.go is True
+    assert cmd.turn_hint == TurnHint.LEFT
+
+
+# --- 외곽 → 장애물 → 도착 -------------------------------------------------
+
+def _to_outer(seq):
+    seq2 = _to_exit_left(seq)
+    _tick(seq, n=3, yellow_detected=True)
+    _tick(seq, n=3, white_detected=True)
+    assert seq.phase == MissionPhase.OUTER_LANE_FOLLOW
+
+
+def test_outer_follows_white():
+    seq = MissionSequencer(_cfg())
+    _to_outer(seq)
+    cmd = _tick(seq, white_detected=True)
+    assert cmd.follow_color == LaneColor.WHITE
+    assert cmd.roi_mode == RoiMode.FULL
+
+
+def test_obstacle_zone_stops_on_aruco():
+    seq = MissionSequencer(_cfg())
+    _to_outer(seq)
+    seq.update(_obs(red_zone_detected=True), dt=0.05)
+    assert seq.phase == MissionPhase.DYNAMIC_OBSTACLE_ZONE
+    # 아루코 보임 → 정지.
+    c_stop = seq.update(_obs(red_zone_detected=True, aruco_present=True), dt=0.05)
+    assert c_stop.state == DriveState.STOP and c_stop.go is False
+    assert c_stop.roi_mode == RoiMode.LOWER_ARUCO
+    # 아루코 사라짐 → 재출발.
+    c_go = seq.update(_obs(red_zone_detected=True, aruco_present=False), dt=0.05)
+    assert c_go.go is True
+
+
+def test_obstacle_to_finish_then_stop():
+    seq = MissionSequencer(_cfg())
+    _to_outer(seq)
+    seq.update(_obs(red_zone_detected=True), dt=0.05)   # OBSTACLE
+    seq.update(_obs(red_zone_detected=False), dt=0.05)  # 벗어남 → FINISH_APPROACH
+    assert seq.phase == MissionPhase.FINISH_APPROACH
+    cmd = seq.update(_obs(checkerboard_detected=True), dt=0.05)  # 체커보드 → 정지
+    assert seq.phase == MissionPhase.FINISH_STOP
+    assert cmd.state == DriveState.STOP and cmd.go is False
+
+
+def test_full_sequence_reaches_finish():
+    seq = MissionSequencer(_cfg())
+    _to_outer(seq)
+    seq.update(_obs(red_zone_detected=True), dt=0.05)
+    seq.update(_obs(red_zone_detected=False), dt=0.05)
+    cmd = seq.update(_obs(checkerboard_detected=True), dt=0.05)
+    assert seq.phase == MissionPhase.FINISH_STOP
+    assert cmd.go is False
+
+
+def test_reset_returns_to_wait():
+    seq = MissionSequencer(_cfg())
+    _to_follow(seq)
+    seq.reset()
+    assert seq.phase == MissionPhase.WAIT_START_SIGNAL
+    assert seq.stopline_count == 0
+
+
+# --- 설정 ----------------------------------------------------------------
+
+def test_config_rejects_bad_side():
     with pytest.raises(ValueError):
-        MissionConfig.from_dict({"circle_loop_side": "LEFT",
-                                 "circle_exit_side": "LEFT"})
+        MissionConfig.from_dict({"roundabout_exit_side": "UP"})
 
 
 def test_config_side_mapping():
-    cfg = MissionConfig.from_dict({"circle_loop_side": "RIGHT",
-                                   "circle_exit_side": "LEFT"})
-    assert cfg.loop_side() == TurnHint.RIGHT
+    cfg = MissionConfig.from_dict({"roundabout_continue_side": "RIGHT",
+                                   "roundabout_exit_side": "LEFT"})
+    assert cfg.continue_side() == TurnHint.RIGHT
     assert cfg.exit_side() == TurnHint.LEFT
 
 
 def test_mission_yaml_loads():
     app = load_config(os.path.join(_CONFIG_DIR, "mission.yaml"))
-    assert app.mission.loop_side() != app.mission.exit_side()
+    assert app.mission.continue_side() == TurnHint.RIGHT
+    assert app.mission.exit_side() == TurnHint.LEFT

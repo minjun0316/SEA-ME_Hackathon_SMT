@@ -47,16 +47,30 @@ class LaneColor(IntEnum):
 
 
 class TurnHint(IntEnum):
-    """@brief 갈림길 조향 힌트(DriveCommand.turn_hint).
+    """@brief 갈림길 조향/ROI bias 힌트(DriveCommand.turn_hint = LaneMode.turn_bias).
 
     @details 원 지름길 갈림길은 양쪽이 같은 노랑·같은 곡률이라 카메라로 구분 불가.
-    상위 미션 SM이 정지선 카운트에 따라 좌/우를 지정해 인지가 그쪽 갈래를 잡게 한다.
-    좌/우가 물리적으로 loop/exit 어느 쪽인지는 YAML(대회장 확정).
+    상위 미션 SM이 정지선 카운트에 따라 좌/우를 지정해 인지가 그쪽 갈래를 잡게 한다
+    (인지는 이 bias로 target_x를 편향). 좌/우의 물리적 의미는 트랙(대회장) 확정.
     """
 
     NONE = 0    ##< 힌트 없음(직진/일반).
-    LEFT = 1    ##< 좌측 갈래로 살짝 조향.
-    RIGHT = 2   ##< 우측 갈래로 살짝 조향.
+    LEFT = 1    ##< 좌측 갈래/출구로 bias.
+    RIGHT = 2   ##< 우측 원형 차선으로 bias.
+
+
+class RoiMode(IntEnum):
+    """@brief 인지에 줄 ROI 지시(DriveCommand.roi_mode = LaneMode.roi_mode).
+
+    @details 판단이 미션 상태에 따라 "어느 영역을 볼지"를 인지에 지시한다. 실제
+    ROI 자르기·mask·target 추출은 인지(OpenCV) 몫이고, 판단은 모드만 낸다.
+    """
+
+    FULL = 0         ##< 전체 ROI(로터리 진입/추종, 외곽 복귀).
+    LOWER = 1        ##< 하단 ROI(직선/접근 주행).
+    RIGHT = 2        ##< 오른쪽 50~60% ROI(원형 계속, 오른쪽 갈래).
+    LEFT = 3         ##< 왼쪽 50~60% ROI(출구 탈출/연결도로).
+    LOWER_ARUCO = 4  ##< 하단 ROI 포함 + 아루코 검출 우선(장애물 구간).
 
 
 @dataclass
@@ -87,7 +101,11 @@ class DriveCommand:
     @var lookahead_scale lookahead 배율(기본 1.0).
     @var steer_limit     정규화 조향 상한 [0.0~1.0](기본 1.0).
     @var follow_color    추종할 차선 색(인지에 전달). 하위 SM은 기본 WHITE.
-    @var turn_hint       갈림길 조향 힌트. 하위 SM은 기본 NONE.
+    @var turn_hint       갈림길 조향/ROI bias 힌트. 하위 SM은 기본 NONE.
+    @var roi_mode        인지 ROI 지시. 하위 SM은 기본 FULL.
+
+    @note follow_color/turn_hint/roi_mode 는 제어가 아니라 **인지에 줄 지시**다.
+    ROS 발행 시 DriveCommand(제어)와 LaneMode(인지)로 나눠 실어 보낸다.
     """
 
     state: DriveState = DriveState.INIT
@@ -97,6 +115,7 @@ class DriveCommand:
     steer_limit: float = 1.0
     follow_color: LaneColor = LaneColor.WHITE
     turn_hint: TurnHint = TurnHint.NONE
+    roi_mode: RoiMode = RoiMode.FULL
 
 
 class DecisionMaker:

@@ -12,6 +12,8 @@ find_package(std_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/LaneStatus.msg"
   "msg/DriveCommand.msg"
+  "msg/MissionCues.msg"
+  "msg/LaneMode.msg"
   DEPENDENCIES std_msgs
 )
 

@@ -1,17 +1,25 @@
 # @file mission.yaml
-# @brief 상위 미션 시퀀스(MissionSequencer) 파라미터.
+# @brief 상위 미션 시퀀스(MissionSequencer, 12-state) 파라미터.
 #
-# 미션 페이즈 SM(M0~M6)의 전이 임계값과 원 지름길 갈림길 좌/우 지정.
-# 좌·우와 거리 임계값은 트랙마다 다르므로 전부 여기서 수정한다.
-# 자세한 시퀀스: docs/mission_fsm.md
+# 로터리 지름길 주행: 첫 정지선=오른쪽 원형 계속, 둘째 정지선=왼쪽 출구 탈출.
+# 한 바퀴 판단은 정지선 검출 횟수만 사용(yaw 누적각 X).
+# 시간·방향은 트랙마다 다르므로 전부 여기서 수정한다. 시퀀스: docs/mission_fsm.md
 
 mission:
-  # --- 원 지름길(M2) 갈림길 좌/우 (⚠️ 대회장서 확정) ---
-  circle_loop_side: LEFT    # 정지선 count==1 → 이 방향으로 조향(원 계속). LEFT/RIGHT.
-  circle_exit_side: RIGHT   # count==2 → 이 방향으로 조향(탈출). loop의 반대여야 함.
+  # --- 로터리 갈림길 방향 (⚠️ 트랙 확정) ---
+  roundabout_continue_side: RIGHT   # 1번째 정지선 후 계속 도는 방향(오른쪽 원형). LEFT/RIGHT.
+  roundabout_exit_side: LEFT        # 2번째 정지선 후 탈출 방향(왼쪽 출구). LEFT/RIGHT.
 
-  # --- 정지선 카운트 디바운스 ---
-  stop_line_debounce: 1.0   # 정지선 count 사이 최소 간격 [s] (같은 선 중복 카운트 방지).
+  # --- 정지선 카운트 ---
+  stopline_debounce_sec: 1.5        # 정지선 카운트 사이 최소 간격 [s] (같은 선 중복 방지).
+  stopline_ignore_after_entry_sec: 1.5  # ROUNDABOUT_ENTRY 진입 직후 정지선 무시 [s].
 
-  # --- 정지 구역(M6) ---
-  stop_zone_stop_dist: 0.20 # 정지구역이 이 거리 이내면 M6 진입·정지 [m].
+  # --- 상태 지속 타이머 (🏁 트랙서 튜닝) ---
+  shortcut_approach_sec: 1.0        # SHORTCUT_APPROACH → ROUNDABOUT_ENTRY [s].
+  continue_right_sec: 1.2           # ROUNDABOUT_CONTINUE_RIGHT 강제 지속 [s] 후 FOLLOW 복귀.
+  exit_left_sec: 1.2                # ROUNDABOUT_EXIT_LEFT 최소 지속 [s] 후 커넥터 판정.
+  white_stable_sec: 0.5             # EXIT_CONNECTOR → OUTER: 흰색 연속 검출 요구 [s].
+
+  # --- 구간별 배율 ---
+  slow_speed_scale: 0.5             # 접근/로터리/장애물/탈출 구간 속도 상한 배율.
+  roundabout_lookahead_scale: 0.7   # 로터리 구간 lookahead 배율(짧게).

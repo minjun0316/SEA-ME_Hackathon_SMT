@@ -23,10 +23,12 @@
     │  image_raw (sensor_msgs/Image)
     ▼
  [perception_node] ── perception/debug/compressed (sensor_msgs/CompressedImage)  # 디버그
-    │  /perception/lane_path   (nav_msgs/Path)         ← ★인지의 핵심 산출물(로컬 경로)
-    │  /perception/lane_status (racer_msgs/LaneStatus) ← 신뢰도·정지선 등 메타
-    ▼
- [decision_node]
+    │  /perception/lane_path   (nav_msgs/Path)          ← ★인지의 핵심 산출물(로컬 경로)
+    │  /perception/lane_status (racer_msgs/LaneStatus)  ← 신뢰도·정지선·노랑/흰 검출
+    │  /perception/mission_cues(racer_msgs/MissionCues) ← 신호등·체커보드·빨강·아루코
+    ▼                        ▲
+ [decision_node]             │ /decision/lane_mode (racer_msgs/LaneMode)
+    │                        │   ← ★판단→인지 역방향 지시(follow_color/roi_mode/turn_bias)
     │  /decision/drive_command (racer_msgs/DriveCommand) ← 상태·속도배율·정지여부
     ▼
  [controller_node]  (구독: lane_path + drive_command)
@@ -36,7 +38,10 @@
 ```
 
 - `controller_node`는 `/perception/lane_path`(경로)와 `/decision/drive_command`(모드)를 함께 구독한다.
-- `lane_status`는 주로 판단이 소비한다(제어는 안 봐도 됨).
+- `lane_status`·`mission_cues`는 판단이 소비한다(제어는 안 봐도 됨).
+- **★역방향**: 미션 SM은 상태에 따라 `/decision/lane_mode`로 인지에 "어느 색/ROI/방향으로 볼지"를
+  지시한다. 인지는 그 지시대로 ROI/mask/target을 뽑아 lane_path로 되돌린다(왕복 계약).
+  자세한 합의 항목은 `perception_agreement.md`.
 
 ---
 
@@ -60,7 +65,9 @@
 | `image_raw` | sensor_msgs/Image | camera | perception | 카메라 fps | best-effort, depth 1 |
 | `/perception/lane_path` | nav_msgs/Path | perception | decision, controller | ~10–30 Hz | best-effort, depth 1 |
 | `/perception/lane_status` | racer_msgs/LaneStatus | perception | decision | lane_path와 동일 | reliable, depth 1 |
+| `/perception/mission_cues` | racer_msgs/MissionCues | perception | decision | ~10 Hz | reliable, depth 1 |
 | `/decision/drive_command` | racer_msgs/DriveCommand | decision | controller | ≥10 Hz(변화 시 포함) | reliable, depth 1 |
+| `/decision/lane_mode` | racer_msgs/LaneMode | decision | perception | ≥10 Hz(변화 시 포함) | reliable, depth 1 |
 | `/control` | control_msgs/Control | controller | control_node | rate_hz(기본 10) | best-effort, depth 10 |
 | `perception/debug/compressed` | sensor_msgs/CompressedImage | perception | (뷰어) | 선택 | best-effort |
 
@@ -95,8 +102,13 @@ float32 confidence        # 0.0~1.0 검출 신뢰도
 int32   num_points        # lane_path 점 개수(0이면 미검출)
 float32 lateral_offset    # 차량중심 대비 차선중심 횡오차 [m], +좌측
 float32 heading_error     # 차량 전방 대비 차선 접선 오차 [rad]
-bool    stop_line         # 정지선 검출 여부
+bool    stop_line         # 정지선 검출 여부(로터리 한 바퀴 카운트용)
 float32 stop_line_dist    # 정지선까지 거리 [m] (미검출 시 -1.0)
+# [iface 2026-07-06] 색 검출 추가 — 노랑/흰을 둘 다 항상 보고(따라가는 색과 무관).
+bool    yellow_detected   # 노랑 차선 검출(지름길/로터리 등장·추종)
+float32 yellow_confidence # 0.0~1.0
+bool    white_detected    # 흰 차선 검출(커넥터→외곽 복귀 판정)
+float32 white_confidence  # 0.0~1.0
 ```
 
 ### 4.4 `/decision/drive_command` → **`racer_msgs/DriveCommand`** (신규)
@@ -118,6 +130,27 @@ uint8 STATE_LOST=4        # 차선 소실 → 정지 또는 마지막 조향 유
 ```
 
 > 판단은 파라미터를 **직접 세팅하지 않고** 이 명령으로 "배율/게이트"만 준다. 제어기의 기본 튜닝값(controller.yaml)은 그대로 두고 상황별로 스케일한다 → 튜닝 일원화.
+
+### 4.5 `/perception/mission_cues` → **`racer_msgs/MissionCues`** (신규, [iface 2026-07-06])
+```
+std_msgs/Header header
+uint8   traffic_light         # TL_NONE=0/TL_RED=1/TL_GREEN=2 (YOLO)
+bool    checkerboard_detected # 체커보드 출발/도착선 (YOLO)
+bool    red_zone_detected     # 빨강 바닥 장애물 구역 (OpenCV 색)
+bool    aruco_present         # 아루코 마커, 하단 ROI (cv2.aruco)
+```
+> 미션 페이즈 전환용 객체/구역 신호 묶음. 차선 기하(lane_path/lane_status)와 분리.
+
+### 4.6 `/decision/lane_mode` → **`racer_msgs/LaneMode`** (신규, [iface 2026-07-06]) ★역방향
+```
+std_msgs/Header header
+uint8 follow_color  # COLOR_WHITE=0/COLOR_YELLOW=1
+uint8 roi_mode      # ROI_FULL=0/LOWER=1/RIGHT=2/LEFT=3/LOWER_ARUCO=4
+uint8 turn_bias     # BIAS_NONE=0/LEFT=1/RIGHT=2
+```
+> **판단→인지** 지시. 미션 SM(12-state)이 상태에 따라 "어느 색/ROI/방향으로 볼지"를 준다.
+> 인지는 이 지시대로 ROI 자르기·mask·target·bias를 적용해 lane_path를 만든다.
+> 상수값은 `core.planning`의 LaneColor/RoiMode/TurnHint와 일치. 상세: `perception_agreement.md`.
 
 ---
 
