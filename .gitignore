@@ -20,5 +20,10 @@ d_racer_autonomous/ros2_ws/src/d_racer_perception/test_data/*
 *.h5
 
 # --- 대용량 원본 데이터 ---
-*.bag                      # ROS bag 녹화 파일 (트랙 데이터 등, 대용량)
-captures/                  # 차에서 수집한 프레임(raw/annotated) — 라벨링용, 대용량
+# (주의: gitignore는 줄 중간 #를 주석으로 취급 안 함 → 코멘트는 반드시 별도 줄)
+# ROS bag 녹화 파일 (트랙 데이터 등, 대용량)
+*.bag
+# ROS2 bag 녹화 디렉토리(.db3+metadata) — *.bag 확장자에 안 걸림
+bagfile/
+# 차에서 수집한 프레임(raw/annotated) — 라벨링용, 대용량
+captures/
