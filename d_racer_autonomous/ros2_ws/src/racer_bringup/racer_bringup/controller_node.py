@@ -86,13 +86,19 @@ if _CORE_ROOT not in sys.path:
 import rclpy  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 
+import numpy as np  # noqa: E402
+
 from control_msgs.msg import Control  # noqa: E402
+from nav_msgs.msg import Path as PathMsg  # noqa: E402
+from racer_msgs.msg import DriveCommand  # noqa: E402
 
 from core import path_factory  # noqa: E402
 from core.config_schema import load_config  # noqa: E402
 from core.control.pure_pursuit import PurePursuitController  # noqa: E402
 from core.control.speed_controller import SpeedController  # noqa: E402
 from core.geometry import Pose2D  # noqa: E402
+from core.path import Path as CorePath  # noqa: E402
+from core.planning import DriveState  # noqa: E402
 
 
 class ControllerNode(Node):
@@ -104,8 +110,14 @@ class ControllerNode(Node):
         # --- 파라미터 (모두 CLI/YAML로 변경 가능, 하드코딩 없음) ---
         self.declare_parameter('control_topic', '/control')
         self.declare_parameter('rate_hz', 10.0)
-        # 사용할 정적 경로: straight | circle | s_curve | sharp_s | figure_eight | rotary
+        # 경로 입력원: static(정적경로, 거치대검증) | topic(/perception/lane_path, 폐루프).
+        self.declare_parameter('source', 'static')
+        # 사용할 정적 경로(source=static): straight | circle | s_curve | sharp_s | figure_eight | rotary
         self.declare_parameter('path', 'straight')
+        # 폐루프(topic) 입력 토픽 + watchdog.
+        self.declare_parameter('lane_path_topic', '/perception/lane_path')
+        self.declare_parameter('drive_command_topic', '/decision/drive_command')
+        self.declare_parameter('lane_timeout', 0.3)  # lane_path 끊김 판정[s] → 정지.
         # core 설정 YAML (비우면 core_root/config 의 기본 파일을 순서대로 병합).
         self.declare_parameter('config_files', [''])
         # perception 이전: 가정하는 로컬 pose(원점, 전방 +x). 폐루프 시 실제값으로 대체.
@@ -136,6 +148,17 @@ class ControllerNode(Node):
         self.enable_drive = bool(self.get_parameter('enable_drive').value)
         self.drive_throttle = float(self.get_parameter('drive_throttle').value)
         self.throttle_limit = abs(float(self.get_parameter('throttle_limit').value))
+
+        self.source = str(self.get_parameter('source').value).strip().lower()
+        if self.source not in ('static', 'topic'):
+            raise ValueError("source must be 'static' or 'topic'")
+        self.lane_timeout = float(self.get_parameter('lane_timeout').value)
+        # 폐루프 입력 상태(topic 모드).
+        self._topic_path = None          ##< 최신 lane_path → core.Path(없으면 None).
+        self._topic_path_time = None     ##< 최신 lane_path 수신 시각.
+        self._drive_cmd = None           ##< 최신 DriveCommand(게이트). 없으면 게이트 통과.
+        self._drive_cmd_time = None      ##< 최신 DriveCommand 수신 시각(stale 판정).
+        self._last_steer = None          ##< 마지막 발행 조향(정지 시 유지용).
 
         # --- core 설정 로드 (vehicle.yaml + controller.yaml 병합) ---
         config_files = self._resolve_config_files()
@@ -170,6 +193,17 @@ class ControllerNode(Node):
             )
 
         self.publisher = self.create_publisher(Control, control_topic, 10)
+
+        # 폐루프(topic): 경로/판단 명령 구독.
+        if self.source == 'topic':
+            lane_topic = str(self.get_parameter('lane_path_topic').value)
+            cmd_topic = str(self.get_parameter('drive_command_topic').value)
+            self.create_subscription(PathMsg, lane_topic, self._on_lane_path, 1)
+            self.create_subscription(DriveCommand, cmd_topic, self._on_drive_command, 1)
+            self.get_logger().info(
+                f'source=topic → 구독 lane_path={lane_topic}, drive_command={cmd_topic}, '
+                f'lane_timeout={self.lane_timeout}s (끊기면 정지, 조향 유지)')
+
         self.timer = self.create_timer(self.dt, self.timer_callback)
 
         # 로그 heartbeat(약 1초마다) 및 조향값 변화 감지용.
@@ -194,44 +228,110 @@ class ControllerNode(Node):
             os.path.join(cfg_dir, 'controller.yaml'),
         ]
 
+    def _on_lane_path(self, msg: PathMsg):
+        """@brief /perception/lane_path(nav_msgs/Path) → core.Path 로 변환·저장.
+
+        @details poses의 (x,y)를 (N,2) 배열로 만들어 core.Path 생성(계약 §4.2).
+        점이 2개 미만이면 무효로 보고 저장하지 않는다(→ watchdog가 정지 처리).
+        """
+        pts = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
+        if len(pts) < 2:
+            self._topic_path = None
+            return
+        try:
+            self._topic_path = CorePath(np.asarray(pts, dtype=float))
+            self._topic_path_time = self.get_clock().now()
+        except Exception as exc:  # noqa: BLE001 - 경로 불량은 정지로 흡수.
+            self.get_logger().warn(f'lane_path 변환 실패: {exc}')
+            self._topic_path = None
+
+    def _on_drive_command(self, msg: DriveCommand):
+        """@brief /decision/drive_command 저장(게이트/배율 적용용)."""
+        self._drive_cmd = msg
+        self._drive_cmd_time = self.get_clock().now()
+
+    def _select_path(self):
+        """@brief 이번 주기 사용할 경로와 정지사유를 반환. @return (path, stop_reason|None)."""
+        if self.source == 'static':
+            return self.path, None
+        # topic 모드: 최신 lane_path + watchdog.
+        if self._topic_path is None or self._topic_path_time is None:
+            return None, 'no_lane_path'
+        age = (self.get_clock().now() - self._topic_path_time).nanoseconds * 1e-9
+        if age > self.lane_timeout:
+            return None, 'lane_timeout'
+        return self._topic_path, None
+
     def timer_callback(self):
-        """@brief 매 주기: PP 조향 + Speed 목표속도 계산 → /control 발행."""
-        # (1) 조향: Pure Pursuit. steering_norm 은 [-1,1] 정규화 + steer_trim 포함.
-        pp = self.pp.compute(self.pose, self.path, self._last_speed)
+        """@brief 매 주기: 경로 선택(정적/토픽+watchdog) → PP 조향 + 게이트 → /control 발행.
 
-        # (2) 속도: 곡률 기반 목표속도(계산/로깅용). 실제 throttle에는 아직 안 씀.
-        sp = self.speed.compute(pp.curvature, self._last_speed, self.dt)
-        self._last_speed = sp.target_speed
+        @details 폐루프(topic)에서 pose는 항상 로컬 원점. 경로가 없거나 끊기면(watchdog)
+        또는 drive_command가 정지(go=false/STOP/LOST)면 throttle=0(조향은 마지막값 유지).
+        """
+        path, stop_reason = self._select_path()
 
-        # (3) throttle: 안전 게이트. enable_drive=False면 0, True면 상수를 클램프.
-        if self.enable_drive:
-            throttle = float(
-                max(-self.throttle_limit,
-                    min(self.throttle_limit, self.drive_throttle))
-            )
-        else:
+        # 판단 게이트: drive_command가 있으면 정지여부/속도배율 반영(없으면 통과).
+        # 명령이 stale(판단 노드 끊김)하면 fail-safe 정지(오래된 go 명령을 붙들지 않음).
+        cmd = self._drive_cmd
+        gate_stop = False
+        gate_reason = None
+        speed_scale = 1.0
+        steer_limit = 1.0
+        if cmd is not None:
+            cmd_age = (self.get_clock().now() - self._drive_cmd_time).nanoseconds * 1e-9
+            if cmd_age > self.lane_timeout:
+                gate_stop = True
+                gate_reason = 'cmd_timeout'
+            else:
+                speed_scale = float(cmd.speed_scale)
+                steer_limit = float(cmd.steer_limit)
+                if (not cmd.go) or cmd.state in (int(DriveState.STOP), int(DriveState.LOST)):
+                    gate_stop = True
+                    gate_reason = 'gate'
+
+        stop = (stop_reason is not None) or gate_stop
+
+        if stop or path is None:
+            # 정지: throttle=0, 조향은 마지막값 유지(없으면 트림=중립).
+            steering = (self._last_steer if self._last_steer is not None
+                        else float(self.config.vehicle.steer_trim))
             throttle = 0.0
+            pp = None
+        else:
+            pp = self.pp.compute(self.pose, path, self._last_speed)
+            sp = self.speed.compute(pp.curvature, self._last_speed, self.dt)
+            self._last_speed = sp.target_speed
+            steering = float(pp.steering_norm)
+            # steer_limit(정규화 조향 상한) 적용.
+            if steer_limit < 1.0:
+                steering = max(-steer_limit, min(steer_limit, steering))
+            self._last_steer = steering
+            # throttle: 안전 게이트 + speed_scale.
+            if self.enable_drive:
+                throttle = float(max(-self.throttle_limit,
+                                     min(self.throttle_limit,
+                                         self.drive_throttle * speed_scale)))
+            else:
+                throttle = 0.0
 
-        # (4) 발행.
         msg = Control()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.steering = float(pp.steering_norm)
-        msg.throttle = throttle
+        msg.steering = float(steering)
+        msg.throttle = float(throttle)
         self.publisher.publish(msg)
 
-        # (5) 로그: 1초마다 또는 조향이 눈에 띄게 변할 때.
+        # 로그: 1초마다 또는 상태/조향 변화 시.
         self._tick += 1
-        steer_deg = math.degrees(pp.steering_rad)
-        changed = (self._prev_log_steer is None or
-                   abs(pp.steering_norm - self._prev_log_steer) > 0.01)
-        if self._tick % self._log_period == 0 or changed:
-            self._prev_log_steer = pp.steering_norm
-            self.get_logger().info(
-                f'steer_norm={pp.steering_norm:+.4f} '
-                f'(δ={steer_deg:+.2f}°, κ={pp.curvature:+.3f}) '
-                f'v_target={sp.target_speed:.3f} throttle={throttle:.3f} '
-                f'nearest={pp.nearest_index} Ld={pp.lookahead:.2f}'
-            )
+        reason = stop_reason or gate_reason or 'drive'
+        if self._tick % self._log_period == 0 or (self._prev_log_steer != reason):
+            self._prev_log_steer = reason
+            if pp is not None:
+                self.get_logger().info(
+                    f'[{reason}] steer={steering:+.4f} (κ={pp.curvature:+.3f}) '
+                    f'throttle={throttle:.3f} scale={speed_scale:.2f} Ld={pp.lookahead:.2f}')
+            else:
+                self.get_logger().info(
+                    f'[STOP:{reason}] steer={steering:+.4f}(유지) throttle=0.0')
 
     def destroy_node(self):
         """@brief 종료 시 중립(steering=trim, throttle=0) 한 번 발행 후 종료."""
