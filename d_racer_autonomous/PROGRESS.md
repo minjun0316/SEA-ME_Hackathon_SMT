@@ -5,7 +5,7 @@
 > **작업 환경 변경(07-03)**: 이제 보드에서 직접 편집·빌드·커밋한다. 워크스페이스=팀레포 `~/SEA-ME_Hackathon_SMT`(= colcon ws, `build/ install/ src/` 포함). 옛 `~/D-Racer-Kit`는 통합되어 없어짐. scp 왕복 불필요.
 
 ## 한 줄 요약
-ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료, Stage 6-b controller_node 작성·검증 완료. 판단 2계층(아래층 반응형 decision + 위층 미션 MissionSequencer) 순수 로직 완성. `racer_msgs` 패키지 신설·**로터리 미션 12-state로 확장(MissionCues/LaneMode 추가)**. **ROS 래퍼 3종(`decision_node`·`controller_node` topic 모드·`mission_node`) 작성 완료(문법검사만, colcon 빌드/실차 미검증). 인지 `lane_only_detect`를 계약(LaneStatus/lane_path) 형식으로 재작성.** 다음은 **colcon 빌드 + 폐루프 배관 실차 검증**.
+ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료, Stage 6-b controller_node 작성·검증 완료. 판단 2계층(아래층 반응형 decision + 위층 미션 MissionSequencer) 순수 로직 완성. `racer_msgs` 로터리 12-state로 확장(MissionCues/LaneMode). ROS 래퍼 3종(decision/controller-topic/mission) + **차선 인지 노드(`lane_detect_node`, cpp 파이썬 포팅) 작성, colcon 빌드 OK·테스트 52개 통과.** **차선추종 폐루프 launch(`lane_follow.launch.py`, YOLO 제외) 완성.** 다음은 **실차 카메라 차선추종 테스트 + 픽셀→미터 캘리브**.
 
 ---
 
@@ -18,10 +18,17 @@ ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료,
 - **`controller_node` topic 모드 + `mission_node` 신설** — controller_node에 `source=static|topic` 파라미터(topic 모드: lane_path+drive_command 구독 + lane_timeout watchdog). `mission_node`(위층 MissionSequencer 얇은 래퍼) + `mission.launch.py` 신설. setup.py/package.xml(nav_msgs) 갱신. 문법검사만. (커밋 `a0af826 [ros]`)
 - **joystick 후진 허용** — throttle 하한 클램프 제거. (커밋 `9f189a4 [joystick]`)
 
-### ★ 다음 세션 바로 할 일: **colcon 빌드 + 폐루프 배관 실차 검증**
-- **colcon 빌드**: `colcon build --packages-select racer_msgs racer_bringup` — 확장된 메시지(MissionCues/LaneMode/LaneStatus)와 3 노드(decision/controller-topic/mission)가 실제로 빌드되는지 확인(지금까지 py 문법검사만 함).
-- **폐루프 배관 스모크(하드웨어 없이)**: 노드 각각 `ros2 run`으로 기동 → 토픽 그래프 연결 확인(`ros2 topic list`, `rqt_graph`). 인지 없이 fake `/perception/lane_status` 퍼블리시해 decision→controller 반응 확인.
-- **인지 노드화**: `lane_only_detect.cpp`(현재 standalone main)를 `d_racer_perception` ROS2 노드로 감싸 `/perception/lane_status`(+lane_path) 발행 — 이게 있어야 폐루프 성립. (또는 python 인지로 우선 배관만.)
+### ✅ 완료(07-07 오후): 차선 인지 ROS 노드 + 차선추종 폐루프(YOLO 제외)
+- **`core/perception/lane_detect.py`(신규, ROS-free)**: cpp 알고리즘 파이썬 포팅. BEV→HLS→슬라이딩윈도우 중심선 → **픽셀→미터(base_link) 변환**. `LaneDetector`/`LaneCalib`/`LaneResult`. 합성 프레임 런타임 검증(findNonZero/HoughLinesP 버전차 reshape).
+- **`d_racer_perception/lane_detect_node.py`(신규, 얇은 노드)**: `camera/image/compressed` 구독 → `/perception/lane_status`(reliable) + `/perception/lane_path`(nav_msgs/Path, base_link) + 디버그영상. `config/lane.yaml`.
+- **`racer_bringup/lane_follow.launch.py`(신규)**: camera→lane_detect→**decision_node(아래층 반응형, lane_status만)**→controller(source=topic) 원샷. YOLO·mission_node 제외. enable_drive 기본 False.
+- setup.py data_files 디렉토리 복사 버그 수정(files_only). colcon build 3패키지 OK, 노드 기동·토픽 발행 확인, 테스트 52개 통과. (커밋 `ead467a [perception]`)
+
+### ★ 다음 세션 바로 할 일: **실차 카메라 차선추종 폐루프 + m/px 캘리브**
+- **보드에서 주행 테스트**: T1 `control_node(use_joystick_control:=False)` + T2 `ros2 launch racer_bringup lane_follow.launch.py`. rqt_image_view로 `/perception/lane/debug/compressed` 보며 차선/윈도우가 맞게 잡히는지 확인. 조향만(enable_drive=False) → 저속(`enable_drive:=True drive_throttle:=0.12`).
+- **픽셀→미터 캘리브(핵심)**: `config/lane.yaml`의 `m_per_px_forward/lateral`·`x_near_m`은 **잠정값**. 바닥에 알려진 거리 표식 두고 BEV에서 픽셀↔미터 실측해 채워야 Pure Pursuit 조향이 맞음. (지금은 대충이라 조향 게인이 안 맞을 수 있음.)
+- **BEV src 튜닝**: `bev_top_y/x`가 카메라 장착각/높이에 안 맞으면 차선이 휘어 보임 → 디버그영상 보며 조정.
+- YOLO 학습 끝나면: mission_cues 인지 추가 → mission_node로 미션(신호등/아루코/로터리) 얹기.
 
 ### ✅ 완료(07-06): `MissionSequencer` 뼈대 (위층 미션 페이즈 SM)
 - `core/planning/mission.py` 신설 — `MissionSequencer`(위층). 아래층 `DecisionMaker`를 **소유·호출**해 합성.
