@@ -172,6 +172,8 @@ class CameraNode(Node):
             self.cap.release()
             self.cap = None
 
+        self.use_v4l2_direct = False
+
         for candidate_pipeline in self.build_candidate_pipelines(self.camera_device, self.flip_method):
             cap = cv2.VideoCapture(candidate_pipeline, cv2.CAP_GSTREAMER)
             if cap.isOpened():
@@ -183,9 +185,56 @@ class CameraNode(Node):
             cap.release()
             self.get_logger().warning(f'Failed to open candidate pipeline: {candidate_pipeline}')
 
+        # --- 폴백: OpenCV에 GStreamer 지원이 없는 빌드(GStreamer:NO)에서는 위 파이프라인이
+        #     전부 실패한다. V4L2로 직접 열고 flip/resize는 수동 처리(출력 shape 동일). ---
+        cap = self._open_v4l2(self.camera_device)
+        if cap is not None:
+            self.cap = cap
+            self.pipeline = f'V4L2-direct({self.camera_device})'
+            self.use_v4l2_direct = True
+            self.get_logger().warning(
+                f'GStreamer 파이프라인 실패 → V4L2 직접 캡처로 폴백: {self.camera_device} '
+                f'(수동 flip={self.flip_method}, resize→{self.image_width}x{self.image_height})')
+            return True
+
         self.cap = None
         self.pipeline = None
         return False
+
+    def _open_v4l2(self, device):
+        """@brief GStreamer 없이 V4L2로 직접 연다. @return 성공 시 VideoCapture, 실패 None."""
+        candidates = [device]
+        # '/dev/videoN' → 인덱스 N 도 시도(백엔드에 따라 문자열/인덱스 선호가 다름).
+        try:
+            if str(device).startswith('/dev/video'):
+                candidates.append(int(str(device).replace('/dev/video', '')))
+        except ValueError:
+            pass
+        for src in candidates:
+            cap = cv2.VideoCapture(src, cv2.CAP_V4L2)
+            if cap.isOpened():
+                try:  # MJPG 우선(USB 대역폭↓). 실패해도 무방.
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                except Exception:
+                    pass
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    return cap
+            cap.release()
+        return None
+
+    def _postprocess_v4l2(self, frame):
+        """@brief V4L2 폴백 시 GStreamer가 하던 flip+scale을 수동으로(출력 규격 일치)."""
+        method = (self.flip_method or '').lower()
+        if method in ('rotate-180', '180'):
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        elif method in ('horizontal', 'horizontal-flip'):
+            frame = cv2.flip(frame, 1)
+        elif method in ('vertical', 'vertical-flip'):
+            frame = cv2.flip(frame, 0)
+        if (frame.shape[1], frame.shape[0]) != (self.image_width, self.image_height):
+            frame = cv2.resize(frame, (self.image_width, self.image_height))
+        return frame
 
     def load_camera_device_overrides(self, default_usb_camera_device, default_mipi_camera_device):
         if not os.path.exists(self.vehicle_config_file):
@@ -217,6 +266,9 @@ class CameraNode(Node):
         if not ret or frame is None:
             self.get_logger().warning('Failed to read frame')
             return
+
+        if getattr(self, 'use_v4l2_direct', False):
+            frame = self._postprocess_v4l2(frame)
 
         success, encoded = cv2.imencode(
             '.jpg',
