@@ -355,7 +355,6 @@ class JoystickNode(Node):
             self.throttle_deadzone,
         )
         throttle = self.clamp(throttle_axis * self.accel_ratio)
-        throttle = max(0.0, throttle)
 
         steering = self.deadzone(
             self.read_steering_axis(data),
