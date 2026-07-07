@@ -1,15 +1,27 @@
 # D-Racer 자율주행 — 진행 상황 / 다음 할 일
 
-> 마지막 작업일: 2026-07-06. 이 문서는 매 세션 끝에 갱신한다.
+> 마지막 작업일: 2026-07-07. 이 문서는 매 세션 끝에 갱신한다.
 >
 > **작업 환경 변경(07-03)**: 이제 보드에서 직접 편집·빌드·커밋한다. 워크스페이스=팀레포 `~/SEA-ME_Hackathon_SMT`(= colcon ws, `build/ install/ src/` 포함). 옛 `~/D-Racer-Kit`는 통합되어 없어짐. scp 왕복 불필요.
 
 ## 한 줄 요약
-ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료, Stage 6-b controller_node 작성·검증 완료. **판단 2계층(아래층 반응형 decision + 위층 미션 MissionSequencer M0~M6) 순수 로직 완성·테스트 50개 통과. `racer_msgs`(LaneStatus/DriveCommand) 패키지 신설·빌드 확인.** 다음은 `decision_node`(얇은 ROS 래퍼).
+ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료, Stage 6-b controller_node 작성·검증 완료. 판단 2계층(아래층 반응형 decision + 위층 미션 MissionSequencer) 순수 로직 완성. `racer_msgs` 패키지 신설·**로터리 미션 12-state로 확장(MissionCues/LaneMode 추가)**. **ROS 래퍼 3종(`decision_node`·`controller_node` topic 모드·`mission_node`) 작성 완료(문법검사만, colcon 빌드/실차 미검증). 인지 `lane_only_detect`를 계약(LaneStatus/lane_path) 형식으로 재작성.** 다음은 **colcon 빌드 + 폐루프 배관 실차 검증**.
 
 ---
 
-## ▶ 다음 세션 여기서 시작 (2026-07-05 마감 기준)
+## ▶ 다음 세션 여기서 시작 (2026-07-07 마감 기준)
+
+### ✅ 완료(07-07): ROS 래퍼 3종 + 인지 계약 형식 + 로터리 12-state
+- **`decision_node`(얇은 ROS 래퍼)** — `/perception/lane_status` 구독 → 아래층 `DecisionMaker` → `/decision/drive_command` 발행 + watchdog. (커밋 `ef7e5b9 [ros]`)
+- **로터리 미션 12-state로 확장** — `core/planning/mission.py` 재작성, `racer_msgs`에 `MissionCues`(신호등/체커보드/빨강/아루코)·`LaneMode`(follow_color/roi_mode/turn_bias) 추가, `LaneStatus` 확장. `docs/interfaces.md`·`mission_fsm.md`·`perception_agreement.md` 갱신. 테스트 갱신. (커밋 `a63ae5b [planning]`)
+- **인지 `lane_only_detect.cpp` 계약 형식 재작성** — `PerceptionResult`를 `LaneStatus` 미러 + `lane_path` 중심선 점열(near→far)로. confidence/lateral_offset/heading_error/stop_line_dist 산출. **값 단위는 아직 픽셀**(미터/base_link 변환 후속). 문법검사 통과. (커밋 `ed001ee [perception]`)
+- **`controller_node` topic 모드 + `mission_node` 신설** — controller_node에 `source=static|topic` 파라미터(topic 모드: lane_path+drive_command 구독 + lane_timeout watchdog). `mission_node`(위층 MissionSequencer 얇은 래퍼) + `mission.launch.py` 신설. setup.py/package.xml(nav_msgs) 갱신. 문법검사만. (커밋 `a0af826 [ros]`)
+- **joystick 후진 허용** — throttle 하한 클램프 제거. (커밋 `9f189a4 [joystick]`)
+
+### ★ 다음 세션 바로 할 일: **colcon 빌드 + 폐루프 배관 실차 검증**
+- **colcon 빌드**: `colcon build --packages-select racer_msgs racer_bringup` — 확장된 메시지(MissionCues/LaneMode/LaneStatus)와 3 노드(decision/controller-topic/mission)가 실제로 빌드되는지 확인(지금까지 py 문법검사만 함).
+- **폐루프 배관 스모크(하드웨어 없이)**: 노드 각각 `ros2 run`으로 기동 → 토픽 그래프 연결 확인(`ros2 topic list`, `rqt_graph`). 인지 없이 fake `/perception/lane_status` 퍼블리시해 decision→controller 반응 확인.
+- **인지 노드화**: `lane_only_detect.cpp`(현재 standalone main)를 `d_racer_perception` ROS2 노드로 감싸 `/perception/lane_status`(+lane_path) 발행 — 이게 있어야 폐루프 성립. (또는 python 인지로 우선 배관만.)
 
 ### ✅ 완료(07-06): `MissionSequencer` 뼈대 (위층 미션 페이즈 SM)
 - `core/planning/mission.py` 신설 — `MissionSequencer`(위층). 아래층 `DecisionMaker`를 **소유·호출**해 합성.
@@ -26,10 +38,9 @@ ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료,
 - `colcon build --packages-select racer_msgs` ✅, `ros2 interface show racer_msgs/msg/DriveCommand` 등록 확인. 커밋 `[iface]` push 완료.
 - **일부러 뺀 것**: 미션 확장 필드(`follow_color`/`turn_hint`, traffic_light/red_zone/aruco/stop_zone). `follow_color`·`turn_hint`는 **인지(OpenCV)가 받아야** 하는데 현재 토픽 그래프가 decision→controller뿐이라 경로 없음 → 아래 [확장 설계] 선행 필요.
 
-### ★ 다음 세션 바로 할 일: `decision_node` (얇은 ROS 래퍼)
-- `ros2_ws/src/racer_bringup`(또는 신규 판단 패키지)에 `decision_node`: `/perception/lane_status`(+lane_path) 구독 → `LaneObservation`으로 변환 → **아래층 `DecisionMaker`** 돌려 → `/decision/drive_command`(racer_msgs) 발행. `controller_node` 방식대로 `_find_core_root()`로 core import.
-- 우선 **아래층(반응형)만** 래핑해 폐루프 배관을 먼저 완성(베이스라인 racer_msgs로 충분). 위층 `MissionSequencer`는 확장 설계 후 얹는다.
-- controller_node에 drive_command 구독+watchdog 반영(계약 §5): `go=false`/STOP/LOST → throttle=0.
+### ~~다음 세션 바로 할 일: `decision_node`~~ ✅ 완료(07-07, 위 07-07 섹션 참조)
+- ~~`decision_node`: lane_status 구독 → 아래층 DecisionMaker → drive_command 발행.~~ → `ef7e5b9`.
+- ~~controller_node에 drive_command 구독+watchdog.~~ → `a0af826`(source=topic 모드).
 
 ### [확장 설계] 미션 신호 경로 (인지팀 합의 필요, decision_node와 병행 가능)
 - decision→perception 신호 경로 신설(예: `/decision/lane_mode`{follow_color, turn_hint} 토픽). `interfaces.md`를 `[iface]`로 먼저 갱신 → 팀 공지 → `racer_msgs` 확장.
@@ -46,7 +57,7 @@ M0 신호대기(초록불,YOLO) → M1 흰직진 → M2 지름길(노랑: 직선
 cd ~/SEA-ME_Hackathon_SMT && source /opt/ros/humble/setup.bash && source install/setup.bash
 ```
 
-**git**: `dev` 브랜치, origin/dev push 완료(HEAD=69d0fbb). 07-06 커밋: `[planning]` 판단 2계층 순수로직(어제분 decision.py 포함) → `[perception]` YOLO seg 노드 제거·NCNN 정리 → `[chore]` .gitignore(bagfile/ + 인라인주석 버그 수정) → `[iface]` racer_msgs 신설. `bagfile/`은 gitignore 처리(미커밋). `decision_node`는 미착수.
+**git**: `dev` 브랜치, origin/dev push 완료(HEAD=9f189a4). 07-07 커밋: `ef7e5b9 [ros]` decision_node → `9999129 [perception]` lane_only 초안 → `a63ae5b [planning]` 로터리 12-state + racer_msgs 확장 → `ed001ee [perception]` lane_only 계약 형식 → `a0af826 [ros]` controller topic 모드 + mission_node → `9f189a4 [joystick]` 후진 허용. `.vscode/`는 gitignore 처리(미커밋). **주의: ROS 래퍼 3종·확장 메시지는 colcon 빌드/실차 미검증(py·cpp 문법검사만).**
 
 **바로 할 수 있는 다음 후보(택1)**
 1. **실차 조향 눈확인**(배터리 완충 필요, 거치대): T1 `ros2 run control control_node --ros-args -p use_joystick_control:=False` + T2 `ros2 launch racer_bringup controller.launch.py path:=circle` → 앞바퀴가 곡률 방향으로 꺾이는지. 이후 저속 `enable_drive:=True drive_throttle:=0.12`.

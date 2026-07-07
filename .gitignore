@@ -1,5 +1,6 @@
 .codex
 .agents
+.vscode/
 build/
 log/
 install/
