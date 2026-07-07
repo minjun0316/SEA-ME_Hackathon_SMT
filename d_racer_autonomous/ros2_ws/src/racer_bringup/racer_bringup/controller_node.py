@@ -85,6 +85,7 @@ if _CORE_ROOT not in sys.path:
 
 import rclpy  # noqa: E402
 from rclpy.node import Node  # noqa: E402
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy  # noqa: E402
 
 import numpy as np  # noqa: E402
 
@@ -198,7 +199,12 @@ class ControllerNode(Node):
         if self.source == 'topic':
             lane_topic = str(self.get_parameter('lane_path_topic').value)
             cmd_topic = str(self.get_parameter('drive_command_topic').value)
-            self.create_subscription(PathMsg, lane_topic, self._on_lane_path, 1)
+            # lane_path는 인지가 best-effort로 발행(계약 §3) → 구독도 best-effort로 맞춤.
+            # (reliable로 구독하면 QoS 불일치로 메시지를 아예 못 받음.)
+            best_effort_q = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+                                       history=HistoryPolicy.KEEP_LAST)
+            self.create_subscription(PathMsg, lane_topic, self._on_lane_path, best_effort_q)
+            # drive_command는 판단이 reliable로 발행 → reliable(기본) 유지.
             self.create_subscription(DriveCommand, cmd_topic, self._on_drive_command, 1)
             self.get_logger().info(
                 f'source=topic → 구독 lane_path={lane_topic}, drive_command={cmd_topic}, '
