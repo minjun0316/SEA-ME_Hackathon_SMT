@@ -24,8 +24,12 @@ ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료,
 - **`racer_bringup/lane_follow.launch.py`(신규)**: camera→lane_detect→**decision_node(아래층 반응형, lane_status만)**→controller(source=topic) 원샷. YOLO·mission_node 제외. enable_drive 기본 False.
 - setup.py data_files 디렉토리 복사 버그 수정(files_only). colcon build 3패키지 OK, 노드 기동·토픽 발행 확인, 테스트 52개 통과. (커밋 `ead467a [perception]`)
 
-### ★ 다음 세션 바로 할 일: **실차 카메라 차선추종 폐루프 + m/px 캘리브**
-- **보드에서 주행 테스트**: T1 `control_node(use_joystick_control:=False)` + T2 `ros2 launch racer_bringup lane_follow.launch.py`. rqt_image_view로 `/perception/lane/debug/compressed` 보며 차선/윈도우가 맞게 잡히는지 확인. 조향만(enable_drive=False) → 저속(`enable_drive:=True drive_throttle:=0.12`).
+### ✅ 완료(07-07 밤): lane_follow 폐루프 배관 실동작 확인(거치대/데스크)
+- **버그 2개 잡음**: (1) `controller_node`가 lane_path를 reliable로 구독 → 인지의 best-effort 발행과 QoS 불일치로 **메시지 0개 수신**(항상 STOP:no_lane_path). best-effort로 수정(`9409b07`). (2) 보드 OpenCV 5.0.0이 **GStreamer:NO** 빌드라 kit `camera_node`가 카메라를 못 엶 → V4L2 직접 캡처 폴백 추가(`3415ea4`).
+- 스모크: `lane_follow.launch.py` 띄우니 camera(V4L2 폴백)→lane_detect(`lane=True conf~0.7`)→decision→**controller `[drive] steer=... κ=...`**(STOP 아님) 흐름 확인. throttle=0(enable_drive=False, 안전).
+
+### ★ 다음 세션 바로 할 일: **실제 트랙 차선 + m/px 캘리브**
+- **트랙에서 주행 테스트**: T1 `control_node(use_joystick_control:=False)` + T2 `ros2 launch racer_bringup lane_follow.launch.py`. rqt_image_view로 `/perception/lane/debug/compressed` 보며 실제 차선/윈도우가 맞게 잡히는지 확인. 조향만(enable_drive=False) → 저속(`enable_drive:=True drive_throttle:=0.12`).
 - **픽셀→미터 캘리브(핵심)**: `config/lane.yaml`의 `m_per_px_forward/lateral`·`x_near_m`은 **잠정값**. 바닥에 알려진 거리 표식 두고 BEV에서 픽셀↔미터 실측해 채워야 Pure Pursuit 조향이 맞음. (지금은 대충이라 조향 게인이 안 맞을 수 있음.)
 - **BEV src 튜닝**: `bev_top_y/x`가 카메라 장착각/높이에 안 맞으면 차선이 휘어 보임 → 디버그영상 보며 조정.
 - YOLO 학습 끝나면: mission_cues 인지 추가 → mission_node로 미션(신호등/아루코/로터리) 얹기.
@@ -75,6 +79,7 @@ cd ~/SEA-ME_Hackathon_SMT && source /opt/ros/humble/setup.bash && source install
 **착수 전 확인**: `docs/interfaces.md §9 결정 대기 4건`(lane_path 타입=nav_msgs/Path, 패키지명 racer_msgs, base_link 원점=뒷차축, 정지선 우선) 팀 합의.
 
 **미해결/주의**
+- ⚠️ **보드 OpenCV 5.0.0 = GStreamer:NO**. `cv2.VideoCapture(..., CAP_GSTREAMER)`는 무조건 실패한다(카메라는 V4L2/FFMPEG로만 열림, `/dev/video1` 정상). camera_node에 V4L2 폴백 넣어 해결했지만, OpenCV 재설치/다른 GStreamer 의존 코드 쓸 때 재발 주의. 확인: `python3 -c "import cv2;print(cv2.getBuildInformation())" | grep GStreamer`.
 - collect1/SECOND 학습사진 보드 디스크에 없음 → Roboflow/데스크탑 확인 or 재수집.
 - 배터리 방전 잦음 → 완충 여분 필수. i2c 먹통 시 점퍼선 재체결.
 - 기존 임시 YOLO 폴더들은 baseline과 분리하기 위해 삭제. 새 인지 코드는 `d_racer_autonomous/ros2_ws/src/d_racer_perception`에서 개발.
