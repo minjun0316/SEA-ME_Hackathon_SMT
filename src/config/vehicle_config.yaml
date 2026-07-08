@@ -4,6 +4,10 @@ MIPI_CAM: false
 USB_CAM_DEVICE: /dev/video1
 IMAGE_WIDTH: 320
 IMAGE_HEIGHT: 160
+# 센서 캡처 해상도(=수평 화각 결정). C920은 16:9 센서라 4:3로 캡처하면 좌우가
+# 잘린다. 16:9로 캡처해 곡선에서 양쪽 차선 화각 확보. 출력은 IMAGE_*로 리사이즈.
+CAPTURE_WIDTH: 640
+CAPTURE_HEIGHT: 360
 ROI_TOP: 50
 ROI_LEFT: 0
 
@@ -11,7 +15,7 @@ ROI_LEFT: 0
 STEER_TRIM: 0.2238
 
 # Web server configuration
-WEB_HOST: 172.30.1.30
+WEB_HOST: 0.0.0.0
 WEB_PORT: 5000
 BATTERY_TOPIC: /battery_status
 IMAGE_TOPIC: /camera/image/compressed

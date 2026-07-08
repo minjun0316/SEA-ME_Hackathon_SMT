@@ -25,5 +25,6 @@ decision:
 
   # --- 상태별 출력 배율 ---
   drive_speed_scale: 1.0   # DRIVE 속도 배율.
-  slow_speed_scale: 0.5    # SLOW 속도 배율.
+  slow_speed_scale: 0.9    # SLOW 속도 배율. (0.5→0.9: 저속주행 시 SLOW 반토막이
+                           #  모터 breakaway 0.16 아래로 떨어지는 문제 회피. 원복=0.5)
   slow_lookahead_scale: 0.8 # SLOW lookahead 배율(코너서 가까이).

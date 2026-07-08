@@ -28,7 +28,7 @@ class CameraNode(Node):
         self.declare_parameter('camera_device', '/dev/video0')
         self.declare_parameter('usb_camera_device', '/dev/video1')
         self.declare_parameter('mipi_camera_device', '/dev/video0')
-        self.declare_parameter('flip_method', 'rotate-180')
+        self.declare_parameter('flip_method', 'none')
         self.declare_parameter('jpeg_quality', 90)
         self.declare_parameter('debug_log', True)
 
@@ -51,6 +51,10 @@ class CameraNode(Node):
         self.jpeg_quality = jpeg_quality
 
         self.image_width, self.image_height = self.load_image_size()
+        # 캡처 해상도는 모델 입력(image_*)과 분리한다. C920은 16:9 센서라
+        # 4:3(640x480)로 캡처하면 좌우가 잘려 수평 화각이 좁아진다. 16:9로 캡처해
+        # 전체 화각을 확보하고, 출력은 _postprocess에서 image_*로 리사이즈한다.
+        self.capture_width, self.capture_height = self.load_capture_size()
         self.usb_cam_enabled, self.mipi_cam_enabled = self.load_camera_source_flags()
         usb_camera_device, mipi_camera_device = self.load_camera_device_overrides(
             usb_camera_device,
@@ -88,6 +92,7 @@ class CameraNode(Node):
             f'[Camera Node] : topic={publish_topic} \n'
             f'[camera source] : {self.camera_source} \n'
             f'[width] : {self.image_width}, [height] : {self.image_height} \n'
+            f'[capture] : {self.capture_width}x{self.capture_height} (16:9 화각 확보용) \n'
             f'[camera_device] : {camera_device} \n'
             f'[flip_method] : {flip_method} \n'
             f'[jpeg_quality] : {self.jpeg_quality} \n'
@@ -112,6 +117,27 @@ class CameraNode(Node):
         image_width = int(config_data.get('IMAGE_WIDTH', default_size[0]))
         image_height = int(config_data.get('IMAGE_HEIGHT', default_size[1]))
         return image_width, image_height
+
+    def load_capture_size(self):
+        # 센서에서 실제로 읽어올 해상도(=화각 결정). 16:9로 두어 C920의 전체 수평
+        # 화각을 확보한다. 화각은 640x360이나 1280x720이나 동일하므로 CPU 절약 위해
+        # 640x360을 기본값으로 쓴다. config에서 CAPTURE_WIDTH/HEIGHT로 재정의 가능.
+        default_size = (640, 360)
+        if not os.path.exists(self.vehicle_config_file):
+            return default_size
+
+        try:
+            with open(self.vehicle_config_file, 'r', encoding='utf-8') as config_stream:
+                config_data = yaml.safe_load(config_stream) or {}
+        except Exception as exc:
+            self.get_logger().warning(
+                f'Failed to read vehicle config file {self.vehicle_config_file}: {exc}'
+            )
+            return default_size
+
+        capture_width = int(config_data.get('CAPTURE_WIDTH', default_size[0]))
+        capture_height = int(config_data.get('CAPTURE_HEIGHT', default_size[1]))
+        return capture_width, capture_height
 
     def load_camera_source_flags(self):
         # Backward-compatible default: MIPI enabled.
@@ -146,14 +172,14 @@ class CameraNode(Node):
             mjpg_pipeline = (
                 f"v4l2src device={camera_device} io-mode=2 ! "
                 "image/jpeg,framerate=30/1 ! jpegdec ! "
-                "videoconvert ! videoscale ! "
+                f"videoconvert ! videoflip method={flip_method} ! videoscale ! "
                 f"video/x-raw,format=BGR,width={self.image_width},height={self.image_height},framerate=30/1 ! "
                 "appsink sync=false drop=true max-buffers=1"
             )
             # Fallback for raw USB camera modes.
             raw_pipeline = (
                 f"v4l2src device={camera_device} io-mode=2 ! "
-                "videoconvert ! videoscale ! "
+                f"videoconvert ! videoflip method={flip_method} ! videoscale ! "
                 f"video/x-raw,format=BGR,width={self.image_width},height={self.image_height},framerate=30/1 ! "
                 "appsink sync=false drop=true max-buffers=1"
             )
@@ -217,6 +243,9 @@ class CameraNode(Node):
                     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
                 except Exception:
                     pass
+                # 16:9 캡처로 열어 좌우 화각 확보(FOURCC 뒤에 설정해야 반영됨).
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_height)
                 ok, frame = cap.read()
                 if ok and frame is not None:
                     return cap

@@ -32,6 +32,8 @@ class ControlNode(Node):
         self.declare_parameter('joystick_topic', 'joystick')
         self.declare_parameter('control_topic', '/control')
         self.declare_parameter('command_hz', 10.0)
+        # watchdog: 명령이 이 시간[s] 이상 안 오면 throttle=0(fail-safe 정지).
+        self.declare_parameter('cmd_timeout', 0.5)
 
         i2c_bus = int(self.get_parameter('i2c_bus').value)
         pca9685_addr = int(self.get_parameter('pca9685_addr').value)
@@ -48,6 +50,7 @@ class ControlNode(Node):
             raise ValueError('command_hz must be greater than 0')
 
         self.command_hz = command_hz
+        self.cmd_timeout = float(self.get_parameter('cmd_timeout').value)
         self.steer_trim = self.load_steer_trim()
 
         self.d3_racer = D3Racer(
@@ -68,12 +71,16 @@ class ControlNode(Node):
             f'  joystick_topic={joystick_topic}\n'
             f'  control_topic={control_topic}\n'
             f'  command_hz={self.command_hz}\n'
+            f'  cmd_timeout={self.cmd_timeout}s (명령 끊기면 정지)\n'
             f'  vehicle_config_file={self.vehicle_config_file}'
         )
 
         self.throttle = 0.0
         self.steering = self.steer_trim
         self.e_stop_active = False
+        # watchdog 상태: 마지막 명령 수신 시각(ns). None이면 아직 명령 없음→정지 유지.
+        self.last_cmd_ns = None
+        self._watchdog_tripped = False
 
         # Control inputs
         self.create_subscription(
@@ -97,7 +104,31 @@ class ControlNode(Node):
             self.apply_actuation(self.steering, 0.0)
             return
 
+        # watchdog: 명령 스트림이 cmd_timeout 넘게 끊기면 정지(조향은 유지).
+        # 상위 스택이 죽거나 Ctrl+C로 사라져도 마지막 throttle을 물고 달리지 않도록.
+        if self._command_stale():
+            if not self._watchdog_tripped:
+                self._watchdog_tripped = True
+                self.get_logger().warning(
+                    f'명령 {self.cmd_timeout:.1f}s 이상 끊김 → watchdog 정지(throttle=0)')
+            self.apply_actuation(self.steering, 0.0)
+            return
+
         self.apply_actuation(self.steering, self.throttle)
+
+    def _command_stale(self):
+        """@brief 마지막 명령 이후 cmd_timeout 초과했는지(=정지해야 하는지)."""
+        if self.last_cmd_ns is None:
+            return True
+        elapsed = (self.get_clock().now().nanoseconds - self.last_cmd_ns) * 1e-9
+        return elapsed > self.cmd_timeout
+
+    def _mark_command(self):
+        """@brief 유효 주행명령 수신 시각 갱신 + watchdog 해제."""
+        self.last_cmd_ns = self.get_clock().now().nanoseconds
+        if self._watchdog_tripped:
+            self._watchdog_tripped = False
+            self.get_logger().info('명령 복구 → watchdog 해제(주행 재개)')
 
     def apply_actuation(self, steering, throttle):
         self.d3_racer.set_steering_percent(float(steering))
@@ -113,6 +144,7 @@ class ControlNode(Node):
 
         self.steering = float(msg.control_msg.steering)
         self.throttle = float(msg.control_msg.throttle)
+        self._mark_command()
 
     def control_callback(self, msg: Control):
         if self.e_stop_active or self.use_joystick_control:
@@ -120,6 +152,7 @@ class ControlNode(Node):
 
         self.steering = float(msg.steering)
         self.throttle = float(msg.throttle)
+        self._mark_command()
 
     def engage_e_stop(self):
         if self.e_stop_active:

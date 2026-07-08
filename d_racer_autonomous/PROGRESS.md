@@ -11,6 +11,20 @@ ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료,
 
 ## ▶ 다음 세션 여기서 시작 (2026-07-07 마감 기준)
 
+### ✅ 완료(07-07 낮): 실차 첫 주행(거치대) + control_node watchdog(안전버그 수정)
+- **거치대에서 폐루프 첫 주행 성공**: `lane_follow`(enable_drive:=True drive_throttle:=0.25 throttle_limit:=0.30)로 뒷바퀴 실제 구동 + 차선 따라 조향 확인.
+- **문제① 계속 SLOW에 갇힘** → throttle 부족으로 안 돌던 원인. decision이 `lateral_offset≈-0.4m > offset_slow(0.12)`라 항상 SLOW(×0.9). **40cm 실제로 벗어난 게 아니라 `m_per_px_lateral=0.005`(캘리브 안 된 잠정값) 때문에 뻥튀기된 값.** 게다가 DRIVE(0.18)여도 breakaway(0.16) 겨우 위. → 임시로 drive_throttle 0.25(SLOW×0.9=0.225)로 넘김. **진짜 해결=m/px lateral 캘리브**(아래 다음할일).
+- **문제② control_node에 watchdog 없음(안전버그)** → 상위 스택 죽거나 Ctrl+C해도 `control_node`가 **마지막 throttle을 물고 계속 주행**(Ctrl+C로 안 멈춤). `src/control/control/control_node.py`에 **명령 watchdog 추가**: 파라미터 `cmd_timeout`(기본 0.5s), 명령 0.5s 끊기면 throttle=0 강제 + 로그. `colcon build --packages-select control` OK. **⚠️ 미커밋 + 실차에서 "Ctrl+C→0.5s 내 자동정지" 검증 남음.**
+- **문제③ camera_node 죽으면 전체 정지**: `use_camera:=False`로 lane_follow 띄웠는데 기존 camera_node가 죽어 있어서 lane_path 안 나옴→계속 STOP. camera_node 단독은 30Hz 정상 확인됨. → **lane_follow는 `use_camera:=False` 빼고 띄워 launch가 카메라까지 관리**하는 게 안전.
+- **비상정지 도구 추가**: `~/stop.sh` + alias `stop`(~/.bashrc). = 주행 스택 kill + `/control` throttle 0. 폭주 시 `stop` 한 단어.
+- **미커밋 변경 4개**(내일 커밋 여부 결정): `control_node.py`(watchdog), `camera_node.py`(C920 16:9 캡처→화각 확보, V4L2 폴백 경로), `vehicle_config.yaml`(CAPTURE_*, flip none, WEB_HOST 0.0.0.0), `decision.yaml`(slow_speed_scale 0.5→0.9).
+- 세션 끝 정리 완료: 모든 노드 종료, 모터 throttle 0, ros2 daemon stop.
+
+### ★ 내일 바로 할 일 (우선순위)
+1. **주행 재개 + watchdog 검증**: T1 `control_node`(로그에 `cmd_timeout=0.5s` 확인) + T2 `ros2 launch racer_bringup lane_follow.launch.py enable_drive:=True drive_throttle:=0.25 throttle_limit:=0.30` (**use_camera 빼기**). 거치대→바닥. **Ctrl+C 눌러 0.5s 내 자동정지 되는지 꼭 확인.**
+2. **m/px lateral 캘리브**(SLOW 오작동 + 조향 정확도 동시 해결): 바닥 거리표식으로 BEV 픽셀↔미터 실측 → `config/lane.yaml` `m_per_px_lateral`. 그러면 lateral_offset이 실제 미터가 돼 SLOW 오판 사라짐.
+3. 미커밋 4개 커밋(특히 control_node watchdog).
+
 ### ✅ 완료(07-07): ROS 래퍼 3종 + 인지 계약 형식 + 로터리 12-state
 - **`decision_node`(얇은 ROS 래퍼)** — `/perception/lane_status` 구독 → 아래층 `DecisionMaker` → `/decision/drive_command` 발행 + watchdog. (커밋 `ef7e5b9 [ros]`)
 - **로터리 미션 12-state로 확장** — `core/planning/mission.py` 재작성, `racer_msgs`에 `MissionCues`(신호등/체커보드/빨강/아루코)·`LaneMode`(follow_color/roi_mode/turn_bias) 추가, `LaneStatus` 확장. `docs/interfaces.md`·`mission_fsm.md`·`perception_agreement.md` 갱신. 테스트 갱신. (커밋 `a63ae5b [planning]`)
