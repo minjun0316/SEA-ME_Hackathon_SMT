@@ -24,7 +24,10 @@ ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료,
 - **`d_racer_perception/mission_cues_node.py`(신규, 얇은 노드)**: camera/image/compressed 구독 → `/perception/mission_cues`(racer_msgs/MissionCues, reliable) 발행 + 디버그영상(`perception/mission_cues/aruco/debug/compressed`). aruco만 실제값, traffic_light/checkerboard/red_zone은 **stub**(후속). present 홀드(hold_sec=0.4) 디바운스.
 - **대회 마커 확정(07-08)**: **DICT_6X6_50, ID 3**. `config/mission_cues.yaml`에 반영. 검증: 6X6_50 ID3 검출 OK, 잘못된 사전(4x4)이면 미검출(사전 일치가 결정적).
 - **시나리오**: 심판이 막대에 든 마커를 멀리서 보여주면 정지, 사라지면 재출발. → roi=전체화면, ID 3만 인정. setup.py entry_point 등록, 중첩 ws(`d_racer_autonomous/ros2_ws`) colcon 빌드 OK, 노드 기동 OK.
-- **⚠️ 미완**: (1) 실차 카메라로 실제 마커 검출 눈확인, (2) `aruco_present`→**정지 연결**(현재 발행만; mission.py는 M4에서만 반응. "언제든 정지" 게이트 여부 미정), (3) mission_cues_node를 launch에 편입, (4) 미커밋.
+- **실차 검출 확인(07-08)**: 처음엔 미검출 → 원인 2개. ① 마커에 **흰 여백(quiet zone) 없음**(검은 판에 꽉 참) → 흰 여백 주니 바로 검출. ② 노드가 params-file 없이 떠서 **기본 사전 4x4**로 봄 → core 기본값을 **DICT_6X6_50**으로 수정(sys.path 소스 로드라 재빌드 불필요). 진단툴 `scripts/aruco_scan.py`(모든 사전 스캔) 추가.
+- **✅ 아루코 정지 배선(07-08, 옵션 A "언제든 정지")**: `decision_node`가 `/perception/mission_cues` 구독 → `aruco_present`를 `stop_request`로(반응층 최우선 STOP, M4 한정 아님). 파라미터 `aruco_stop_enable`(기본 True)·`mission_cues_timeout`(0.5s, 신호 끊기면 주행복귀). `lane_follow.launch.py`에 `mission_cues_node`(use_mission_cues 기본 True) 편입 + decision에 토픽 전달. **end-to-end 검증**: lane만→DRIVE, +aruco→STOP(go=false), -aruco→DRIVE복귀 확인. colcon 빌드 OK.
+- **★ 실차 테스트 명령**: `racer-run enable_drive:=True drive_throttle:=0.16 throttle_limit:=0.20 use_decision:=True` → 차선추종 중 ID3 마커 보이면 정지, 치우면 재출발.
+- **⚠️ 미완**: (1) 실차에서 "주행 중 마커→정지→복귀" 눈확인, (2) **거리 테스트**(320×160이라 멀면 미검출 — 정지 가능 최대거리 파악, 부족하면 카메라 해상도 ↑), (3) 미커밋(aruco 노드+정지배선 일괄), (4) 나중에 미션 붙일 때 M4 한정으로 좁힐지.
 
 ### ✅ 완료(07-07 낮): 실차 첫 주행(거치대) + control_node watchdog(안전버그 수정)
 - **거치대에서 폐루프 첫 주행 성공**: `lane_follow`(enable_drive:=True drive_throttle:=0.25 throttle_limit:=0.30)로 뒷바퀴 실제 구동 + 차선 따라 조향 확인.

@@ -93,6 +93,13 @@ class DecisionNode(Node):
         self.declare_parameter('lane_timeout', 0.3)
         # core 설정 YAML (비우면 core_root/config/decision.yaml 사용).
         self.declare_parameter('config_files', [''])
+        # 미션신호(아루코) 정지 게이트: aruco_present면 stop_request → 최우선 STOP.
+        # "언제든 마커 보이면 정지, 사라지면 복귀"(반응층). 미션 M4 페이즈 한정 아님.
+        self.declare_parameter('mission_cues_topic', '/perception/mission_cues')
+        self.declare_parameter('aruco_stop_enable', True)
+        # 이 시간 넘게 mission_cues가 안 오면 아루코 없음으로 취급(주행 유지).
+        # 정지신호는 신선할 때만 유효 — 프레임 끊김/노드 죽음에 붙들려 정지 안 함.
+        self.declare_parameter('mission_cues_timeout', 0.5)
 
         lane_topic = str(self.get_parameter('lane_status_topic').value)
         cmd_topic = str(self.get_parameter('drive_command_topic').value)
@@ -102,6 +109,9 @@ class DecisionNode(Node):
         self.rate_hz = rate_hz
         self.dt_nominal = 1.0 / rate_hz
         self.lane_timeout = float(self.get_parameter('lane_timeout').value)
+        self.mission_cues_topic = str(self.get_parameter('mission_cues_topic').value)
+        self.aruco_stop_enable = bool(self.get_parameter('aruco_stop_enable').value)
+        self.mission_cues_timeout = float(self.get_parameter('mission_cues_timeout').value)
 
         # --- core 판단 로직 구성 ---
         config_files = self._resolve_config_files()
@@ -113,6 +123,8 @@ class DecisionNode(Node):
         self._last_status_time = None   ##< 최신 수신 시각(rclpy.Time).
         self._last_tick_time = None     ##< 직전 타이머 tick 시각(dt 산출용).
         self._prev_log_state = None
+        self._aruco_present = False     ##< 최신 mission_cues.aruco_present.
+        self._aruco_time = None         ##< 최신 mission_cues 수신 시각(stale 판정).
 
         self.get_logger().info(
             'decision_node 구성:\n'
@@ -121,14 +133,21 @@ class DecisionNode(Node):
             f'  구독 lane_status={lane_topic}\n'
             f'  발행 drive_command={cmd_topic} rate_hz={self.rate_hz}\n'
             f'  lane_timeout={self.lane_timeout}s (초과 시 LOST, fail-safe)\n'
-            '  범위: 아래층 반응형 SM만 (미션층은 확장 후). '
-            'stop_request 발행원 없음 → 항상 False.'
+            f'  아루코정지: enable={self.aruco_stop_enable} '
+            f'구독={self.mission_cues_topic} timeout={self.mission_cues_timeout}s '
+            '(aruco_present→stop_request→최우선 STOP, 사라지면 복귀)\n'
+            '  범위: 아래층 반응형 SM + 아루코 정지 게이트.'
         )
 
         # 계약 §3: lane_status/drive_command 는 reliable, depth 1 (rclpy 기본 reliable).
         self.pub = self.create_publisher(DriveCommand, cmd_topic, 1)
         self.sub = self.create_subscription(
             LaneStatus, lane_topic, self._on_lane_status, 1)
+        # 미션신호(아루코) 구독 — 정지 게이트용(활성 시에만).
+        self.sub_cues = None
+        if self.aruco_stop_enable:
+            self.sub_cues = self.create_subscription(
+                MissionCues, self.mission_cues_topic, self._on_mission_cues, 1)
         self.timer = self.create_timer(self.dt_nominal, self._on_timer)
 
         self._log_period = max(1, int(round(self.rate_hz)))
@@ -148,6 +167,19 @@ class DecisionNode(Node):
         self._last_status = msg
         self._last_status_time = self.get_clock().now()
 
+    def _on_mission_cues(self, msg: MissionCues):
+        """@brief 미션신호 저장. aruco_present는 정지 게이트(stop_request)로 쓴다."""
+        self._aruco_present = bool(msg.aruco_present)
+        self._aruco_time = self.get_clock().now()
+
+    def _aruco_stop_active(self, now) -> bool:
+        """@brief 아루코 정지신호가 유효한지(활성 + present + 신선)."""
+        if not self.aruco_stop_enable or not self._aruco_present \
+                or self._aruco_time is None:
+            return False
+        age = (now - self._aruco_time).nanoseconds * 1e-9
+        return age <= self.mission_cues_timeout
+
     def _obs_from_status(self, msg: LaneStatus) -> LaneObservation:
         """@brief LaneStatus(ROS) → LaneObservation(core) 변환."""
         return LaneObservation(
@@ -158,7 +190,7 @@ class DecisionNode(Node):
             heading_error=float(msg.heading_error),
             stop_line=bool(msg.stop_line),
             stop_line_dist=float(msg.stop_line_dist),
-            stop_request=False,   # 발행원 없음(후속 e-stop 토픽에서 채움).
+            stop_request=False,   # 아루코 등 외부 정지는 _on_timer에서 덮어씀.
         )
 
     def _on_timer(self):
@@ -179,6 +211,11 @@ class DecisionNode(Node):
             obs = LaneObservation(lane_detected=False)  # 미검출 → grace 후 LOST.
         else:
             obs = self._obs_from_status(self._last_status)
+
+        # 아루코 정지 게이트: 유효하면 stop_request=True(차선 상태와 무관하게 최우선 STOP).
+        aruco_stop = self._aruco_stop_active(now)
+        if aruco_stop:
+            obs.stop_request = True
 
         cmd = self.decision.update(obs, dt)
 
@@ -201,6 +238,7 @@ class DecisionNode(Node):
                 f'speed_scale={cmd.speed_scale:.2f} '
                 f'lookahead_scale={cmd.lookahead_scale:.2f} '
                 f'steer_limit={cmd.steer_limit:.2f} '
+                f'{"[ARUCO-STOP]" if aruco_stop else ""}'
                 f'{"(stale→watchdog)" if stale else ""}'
             )
 
