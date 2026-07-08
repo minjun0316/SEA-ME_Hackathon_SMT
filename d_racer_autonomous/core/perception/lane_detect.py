@@ -44,10 +44,6 @@ class LaneCalib:
     nwindows: int = 9
     margin: int = 30
     minpix: int = 5
-    # 진짜 선 vs 얼룩(클러터) 판정 임계: 한 선이 최소 이 창 수 이상에서 잡혀야
-    # 유효(피팅 대상). 작을수록 커브에서 짧게만 잡힌 진짜 선을 살리지만, 그만큼
-    # 2창짜리 얼룩을 선으로 오검할 위험↑. 2 = 2창 미만(=1창 이하)이면 버림.
-    min_track: int = 2
     # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
     # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
     lane_width_px: float = 180.0
@@ -249,11 +245,12 @@ class LaneDetector:
                 cv2.rectangle(debug, (lx_low, y_low), (lx_high, y_high), (255, 0, 0), 2)
                 cv2.rectangle(debug, (rx_low, y_low), (rx_high, y_high), (0, 0, 255), 2)
 
-        # --- 2단계: 연속성 판정 + 곡선 피팅(far까지 연장) ---
-        # 진짜 차선은 여러 창에 걸쳐 잡히고 얼룩은 1~2창 → min_track 컷. 잡힌 점들을
-        # x=f(y) 다항식으로 피팅해 놓친(위쪽) 창까지 곡선을 연장한다 → 커브에서 선이
-        # 프레임 위로 빠져도 중심선이 계속 휘어 커브를 완주.
-        min_track = max(1, int(c.min_track))
+        # --- 2단계: 유효 선 판정 + 곡선 피팅(far까지 연장) ---
+        # 잡힌 점들을 x=f(y) 다항식으로 피팅해 놓친(위쪽) 창까지 곡선을 연장한다
+        # → 커브에서 선이 프레임 위로 빠져도 중심선이 계속 휘어 커브를 완주.
+        # min_track = 피팅에 필요한 최소 창 수. 실제 트랙엔 얼룩이 없어 느슨히 2로 둠
+        # (2 미만은 피팅 불가). 얼룩 있는 환경이면 ↑로 얼룩 오검을 컷할 수 있음.
+        min_track = 2
         cys_arr = np.array(cys, dtype=np.float64)
 
         def fit_line(found_flag, xs_list):
