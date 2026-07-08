@@ -83,6 +83,7 @@ class LaneDetectNode(Node):
         self.declare_parameter('bev_top_x', d.bev_top_x)
         self.declare_parameter('yellow_pixel_threshold', d.yellow_pixel_threshold)
         self.declare_parameter('stopline_len_threshold', d.stopline_len_threshold)
+        self.declare_parameter('lane_width_px', d.lane_width_px)
 
         calib = LaneCalib(
             m_per_px_forward=float(self.get_parameter('m_per_px_forward').value),
@@ -92,6 +93,7 @@ class LaneDetectNode(Node):
             bev_top_x=float(self.get_parameter('bev_top_x').value),
             yellow_pixel_threshold=int(self.get_parameter('yellow_pixel_threshold').value),
             stopline_len_threshold=float(self.get_parameter('stopline_len_threshold').value),
+            lane_width_px=float(self.get_parameter('lane_width_px').value),
         )
         self.detector = LaneDetector(calib)
 

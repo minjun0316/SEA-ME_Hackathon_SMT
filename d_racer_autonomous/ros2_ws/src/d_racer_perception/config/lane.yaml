@@ -21,3 +21,7 @@ lane_detect_node:
     # --- 색/정지선 임계 ---
     yellow_pixel_threshold: 30
     stopline_len_threshold: 150.0
+
+    # --- 커브: 한쪽 차선 소실 시 복원용 차선폭[BEV px] ---
+    # 두 선 다 보이는 프레임에서 자동 학습. 아래는 학습 전 초기값(트랙서 조정 가능).
+    lane_width_px: 180.0

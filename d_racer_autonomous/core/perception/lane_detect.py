@@ -44,6 +44,9 @@ class LaneCalib:
     nwindows: int = 9
     margin: int = 20
     minpix: int = 5
+    # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
+    # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
+    lane_width_px: float = 180.0
 
     # --- 정지선(Hough) ---
     stopline_len_threshold: float = 150.0
@@ -88,6 +91,7 @@ class LaneDetector:
         self._M_size: Optional[Tuple[int, int]] = None
         self._last_leftx = 0.0
         self._last_rightx = 0.0
+        self._lane_width_px = None   ##< 두 선 다 보일 때 학습한 차선폭[px]. None이면 config 기본값.
 
     # ------------------------------------------------------------------ #
     def detect(self, frame: np.ndarray, want_debug: bool = False) -> LaneResult:
@@ -205,8 +209,13 @@ class LaneDetector:
         nzy = pts[:, 1]
 
         window_height = max(1, h // c.nwindows)
-        valid = 0
-        # 창 0 = 바닥(가까움) → 창 nwindows-1 = 위(멂): 순서대로 push → near→far
+
+        # --- 1단계: 좌/우 각각 추적(창별 위치 + 검출여부 기록) ---
+        lxs: List[float] = []
+        rxs: List[float] = []
+        cys: List[float] = []
+        lfound: List[bool] = []
+        rfound: List[bool] = []
         for win in range(c.nwindows):
             y_low = h - (win + 1) * window_height
             y_high = h - win * window_height
@@ -217,26 +226,67 @@ class LaneDetector:
             good_left = in_y & (nzx >= lx_low) & (nzx < lx_high)
             good_right = in_y & (nzx >= rx_low) & (nzx < rx_high)
 
-            updated = False
-            if int(good_left.sum()) > c.minpix:
+            lf = int(good_left.sum()) > c.minpix
+            rf = int(good_right.sum()) > c.minpix
+            if lf:
                 leftx = int(nzx[good_left].mean())
-                updated = True
-            if int(good_right.sum()) > c.minpix:
+            if rf:
                 rightx = int(nzx[good_right].mean())
-                updated = True
-            if updated:
-                valid += 1
 
-            cx = (leftx + rightx) / 2.0
-            cy = (y_low + y_high) / 2.0
-            centerline.append((cx, cy))
+            lxs.append(leftx); rxs.append(rightx); cys.append((y_low + y_high) / 2.0)
+            lfound.append(lf); rfound.append(rf)
 
             if debug is not None:
                 cv2.rectangle(debug, (lx_low, y_low), (lx_high, y_high), (255, 0, 0), 2)
                 cv2.rectangle(debug, (rx_low, y_low), (rx_high, y_high), (0, 0, 255), 2)
 
+        # --- 2단계: 연속성으로 진짜 선 vs 얼룩(클러터) 판정 ---
+        # 진짜 차선은 여러 창에 걸쳐 길게 잡히고, 얼룩은 1~2창만 → min_track로 컷.
+        left_count = sum(lfound)
+        right_count = sum(rfound)
+        min_track = max(2, c.nwindows // 3)
+        left_ok = left_count >= min_track
+        right_ok = right_count >= min_track
+
+        # 차선폭 학습: 두 선 모두 잡힌 창들의 좌우 간격 평균(신뢰 프레임에서만).
+        lane_w = self._lane_width_px if self._lane_width_px is not None \
+            else float(c.lane_width_px)
+        if left_ok and right_ok:
+            gaps = [rxs[i] - lxs[i] for i in range(c.nwindows)
+                    if lfound[i] and rfound[i] and (rxs[i] - lxs[i]) > 0.3 * lane_w]
+            if gaps:
+                wobs = sum(gaps) / len(gaps)
+                lane_w = lane_w * 0.7 + wobs * 0.3
+
+        # --- 3단계: 모드별 중심선 산출 ---
+        # both: 양쪽 평균 / left|right만: 그 선 ± 차선폭/2(복원) → 커브 계속 추종.
+        centerline = []
+        valid = 0
+        prev_cx = None
+        for i in range(c.nwindows):
+            cx = None
+            if left_ok and right_ok:
+                if lfound[i] and rfound[i]:
+                    cx = (lxs[i] + rxs[i]) / 2.0
+                elif lfound[i]:
+                    cx = lxs[i] + lane_w / 2.0
+                elif rfound[i]:
+                    cx = rxs[i] - lane_w / 2.0
+            elif left_ok:                       # 오른쪽은 얼룩/소실 → 왼쪽 기준 복원
+                cx = lxs[i] + lane_w / 2.0
+            elif right_ok:
+                cx = rxs[i] - lane_w / 2.0
+            if cx is None:
+                cx = prev_cx if prev_cx is not None else midpoint
+            else:
+                valid += 1
+            centerline.append((cx, cys[i]))
+            prev_cx = cx
+
         self._last_leftx = leftx
         self._last_rightx = rightx
+        if lane_w > 1.0:
+            self._lane_width_px = lane_w   # 다음 프레임으로 학습 폭 이월.
         return centerline, valid / float(c.nwindows)
 
     def _px_to_m(self, col: float, row: float, h: int, midpoint: int) -> Tuple[float, float]:
