@@ -42,11 +42,19 @@ class LaneCalib:
 
     # --- 슬라이딩 윈도우 ---
     nwindows: int = 9
-    margin: int = 20
+    margin: int = 30
     minpix: int = 5
+    # 진짜 선 vs 얼룩(클러터) 판정 임계: 한 선이 최소 이 창 수 이상에서 잡혀야
+    # 유효(피팅 대상). 작을수록 커브에서 짧게만 잡힌 진짜 선을 살리지만, 그만큼
+    # 2창짜리 얼룩을 선으로 오검할 위험↑. 2 = 2창 미만(=1창 이하)이면 버림.
+    min_track: int = 2
     # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
     # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
     lane_width_px: float = 180.0
+    # 중심선 노이즈 완화: 경로점을 다항식(y~x)으로 피팅해 매끄럽게. 슬라이딩윈도우
+    # 창별 흔들림이 조향 휘청임으로 이어지는 걸 방지(직선·커브 공통). order 2면 곡선까지.
+    path_smooth: bool = True
+    path_smooth_order: int = 2
 
     # --- 정지선(Hough) ---
     stopline_len_threshold: float = 150.0
@@ -135,6 +143,7 @@ class LaneDetector:
 
         if res.lane_detected:
             path_m = [self._px_to_m(cx, cy, h, midpoint) for (cx, cy) in centerline_px]
+            path_m = self._smooth_path(path_m)            # 노이즈 완화(다항식 피팅)
             res.lane_path = path_m
             res.num_points = len(path_m)
             xn, yn = path_m[0]
@@ -240,54 +249,86 @@ class LaneDetector:
                 cv2.rectangle(debug, (lx_low, y_low), (lx_high, y_high), (255, 0, 0), 2)
                 cv2.rectangle(debug, (rx_low, y_low), (rx_high, y_high), (0, 0, 255), 2)
 
-        # --- 2단계: 연속성으로 진짜 선 vs 얼룩(클러터) 판정 ---
-        # 진짜 차선은 여러 창에 걸쳐 길게 잡히고, 얼룩은 1~2창만 → min_track로 컷.
-        left_count = sum(lfound)
-        right_count = sum(rfound)
-        min_track = max(2, c.nwindows // 3)
-        left_ok = left_count >= min_track
-        right_ok = right_count >= min_track
+        # --- 2단계: 연속성 판정 + 곡선 피팅(far까지 연장) ---
+        # 진짜 차선은 여러 창에 걸쳐 잡히고 얼룩은 1~2창 → min_track 컷. 잡힌 점들을
+        # x=f(y) 다항식으로 피팅해 놓친(위쪽) 창까지 곡선을 연장한다 → 커브에서 선이
+        # 프레임 위로 빠져도 중심선이 계속 휘어 커브를 완주.
+        min_track = max(1, int(c.min_track))
+        cys_arr = np.array(cys, dtype=np.float64)
 
-        # 차선폭 학습: 두 선 모두 잡힌 창들의 좌우 간격 평균(신뢰 프레임에서만).
+        def fit_line(found_flag, xs_list):
+            ys = np.array([cys[i] for i in range(c.nwindows) if found_flag[i]],
+                          dtype=np.float64)
+            xs = np.array([xs_list[i] for i in range(c.nwindows) if found_flag[i]],
+                          dtype=np.float64)
+            if len(ys) < min_track or float(ys.max() - ys.min()) < 1e-3:
+                return None
+            order = 2 if len(ys) >= 3 else 1   # 3점 이상이면 곡선(2차)
+            try:
+                coef = np.polyfit(ys, xs, order)
+            except (np.linalg.LinAlgError, ValueError):
+                return None
+            return np.polyval(coef, cys_arr)   # 모든 창 y에서의 x(연장 포함)
+
+        left_line = fit_line(lfound, lxs)
+        right_line = fit_line(rfound, rxs)
+        left_ok = left_line is not None
+        right_ok = right_line is not None
+
+        # 차선폭 학습(양쪽 다 피팅될 때, 피팅선 간격 평균).
         lane_w = self._lane_width_px if self._lane_width_px is not None \
             else float(c.lane_width_px)
         if left_ok and right_ok:
-            gaps = [rxs[i] - lxs[i] for i in range(c.nwindows)
-                    if lfound[i] and rfound[i] and (rxs[i] - lxs[i]) > 0.3 * lane_w]
-            if gaps:
-                wobs = sum(gaps) / len(gaps)
+            wobs = float(np.mean(right_line - left_line))
+            if wobs > 0.3 * lane_w:
                 lane_w = lane_w * 0.7 + wobs * 0.3
 
-        # --- 3단계: 모드별 중심선 산출 ---
-        # both: 양쪽 평균 / left|right만: 그 선 ± 차선폭/2(복원) → 커브 계속 추종.
+        # --- 3단계: 모드별 중심선(피팅선 사용 → 곡선 연장) ---
         centerline = []
-        valid = 0
         prev_cx = None
         for i in range(c.nwindows):
-            cx = None
             if left_ok and right_ok:
-                if lfound[i] and rfound[i]:
-                    cx = (lxs[i] + rxs[i]) / 2.0
-                elif lfound[i]:
-                    cx = lxs[i] + lane_w / 2.0
-                elif rfound[i]:
-                    cx = rxs[i] - lane_w / 2.0
-            elif left_ok:                       # 오른쪽은 얼룩/소실 → 왼쪽 기준 복원
-                cx = lxs[i] + lane_w / 2.0
-            elif right_ok:
-                cx = rxs[i] - lane_w / 2.0
-            if cx is None:
-                cx = prev_cx if prev_cx is not None else midpoint
+                cx = (left_line[i] + right_line[i]) / 2.0
+            elif left_ok:                       # 왼쪽선만: 오른쪽을 차선폭으로 복원
+                cx = left_line[i] + lane_w / 2.0
+            elif right_ok:                      # 오른쪽선만: 왼쪽 복원
+                cx = right_line[i] - lane_w / 2.0
             else:
-                valid += 1
-            centerline.append((cx, cys[i]))
+                cx = prev_cx if prev_cx is not None else float(midpoint)
+            centerline.append((float(cx), cys[i]))
             prev_cx = cx
 
-        self._last_leftx = leftx
-        self._last_rightx = rightx
+        # confidence: 실제로 픽셀이 잡힌 창 비율(피팅 연장분 제외).
+        found_any = sum(1 for i in range(c.nwindows) if lfound[i] or rfound[i])
+        confidence = found_any / float(c.nwindows)
+
+        # 다음 프레임 seed: near(바닥=cys[0]) 쪽 피팅값 우선.
+        self._last_leftx = float(left_line[0]) if left_ok else leftx
+        self._last_rightx = float(right_line[0]) if right_ok else rightx
         if lane_w > 1.0:
             self._lane_width_px = lane_w   # 다음 프레임으로 학습 폭 이월.
-        return centerline, valid / float(c.nwindows)
+        return centerline, confidence
+
+    def _smooth_path(self, path_m: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """@brief 중심선(x,y)을 다항식(y~x)으로 피팅해 창별 노이즈 제거.
+
+        @details 슬라이딩 윈도우 중심은 창마다 흔들려 조향 휘청임을 유발한다.
+        near→far로 단조증가하는 x에 대해 y를 저차 다항식으로 피팅해 매끄러운 경로를
+        만든다. 점이 부족하거나 x폭이 없으면 원본 유지(안전).
+        """
+        c = self.calib
+        if not c.path_smooth or len(path_m) < c.path_smooth_order + 1:
+            return path_m
+        xs = np.array([p[0] for p in path_m], dtype=np.float64)
+        ys = np.array([p[1] for p in path_m], dtype=np.float64)
+        if float(xs.max() - xs.min()) < 1e-3:             # x가 거의 동일 → 피팅 불가
+            return path_m
+        try:
+            coef = np.polyfit(xs, ys, c.path_smooth_order)
+            ys_fit = np.polyval(coef, xs)
+        except (np.linalg.LinAlgError, ValueError):
+            return path_m
+        return [(float(x), float(y)) for x, y in zip(xs, ys_fit)]
 
     def _px_to_m(self, col: float, row: float, h: int, midpoint: int) -> Tuple[float, float]:
         """@brief BEV 픽셀(col,row) → base_link 미터(+x 전방, +y 좌). 잠정 스케일."""

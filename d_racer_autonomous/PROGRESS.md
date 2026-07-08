@@ -11,6 +11,34 @@ ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료,
 
 ## ▶ 다음 세션 여기서 시작 (2026-07-08 마감 기준)
 
+> **대회 D-4 (2026-07-12 경 대회 추정, 4일 남음).** 오늘: 저속주행 원인규명 → ArUco 인지+정지배선 → **차선추종 커브 문제 집중 수정**.
+
+### ★★ 다음 세션 첫 할 일: 커브 완주 실차 검증 (아직 미확인)
+오늘 커브 추종을 여러 번 고쳤고 **오프라인(캡처 프레임)으론 커브 잡히는 것 확인**했지만, **실차에서 커브 완주하는지는 미검증**(사용자가 나중에 테스트 예정).
+```bash
+racer-clean
+racer-run enable_drive:=True drive_throttle:=0.16 throttle_limit:=0.20
+```
+- ✅ **커브 완주 + 안정** → 폐루프 인지·제어 완성. 다음은 `use_decision:=True`로 마커정지 합쳐 미션 시작.
+- ⚠️ **과하게 꺾임(오버슈트)** → 복원 차선폭(`lane.yaml lane_width_px`) 학습값이 큼 or 피팅 과함 → `path_smooth_order` 또는 gain 낮춤.
+- ⚠️ **여전히 덜 꺾임/못 완주** → (a) 조향 포화 의심(`max_steer_deg=10°`→최소회전반경~1m, 트랙 커브가 더 급하면 물리한계) 실측 필요, (b) 우측커브면 트림 비대칭(-0.776 조기포화) 확인. `/control` steering 값 캡처해 포화 여부부터 볼 것.
+- 🌀 **직선 휘청** → `ld_min` ↑(0.3→0.4) 또는 `steering_smoothing` ↓.
+
+### ✅ 완료(07-08): 차선추종 커브 대응 대수술 (인지) + 제어 튜닝
+**문제 흐름**: 저속주행은 되는데 ①커브 추종 안 됨 → ②주황 얼룩테이프를 차선으로 오검 → ③커브에서 바깥 주황선이 좁은 화각(320×160) 밖으로 나가 **한쪽만 인식** → ④한쪽만 볼 때 중심선이 커브를 못 담음(head~0, 곧 직진 판단 → 완주 못함).
+- **인지 수정(`core/perception/lane_detect.py` `_sliding_window` 2→3단계 대개편)**:
+  1) 좌/우 각각 추적(창별 위치·검출여부 기록)
+  2) **연속성(`min_track`)으로 진짜 선 vs 얼룩 판정** — 얼룩은 1~2창만 잡혀 컷
+  3) 잡힌 점들을 **다항식 x=f(y)로 피팅 → far까지 곡선 연장(extrapolate)** → 선이 프레임 위로 빠져도 곡선 이어감. 한쪽만 보이면 **차선폭(자동학습)으로 반대선 복원**. 중심선은 피팅선 기반.
+  - `_smooth_path`(경로 다항식 스무딩, 휘청임↓) + `LaneCalib`에 `min_track`/`lane_width_px`/`path_smooth(_order)` 추가(lane.yaml·node 노출). margin 20→30.
+  - **오프라인 검증**: 실측 커브 프레임에서 head +0.03(안됨) → **+0.25rad(≈14°, 커브 완주 가능)**, 얼룩 무시, 두 선 프레임 conf=1.0·폭 253px 학습. 유닛테스트 52개 통과.
+- **제어 튜닝(`config/controller.yaml`)**: 커브 언더스티어 → `steering_gain 1.0→1.3`(1.45 시도했다 원복), `ld_min` 0.3 유지(0.4 시도→코너컷→원복), `steering_smoothing 0.3`(0.5 시도→원복). **튜닝만으론 저속서 직선·커브 양립 어려워** 인지 스무딩+연장으로 근본 해결한 것.
+- ⚠️ **미검증**: 위 전부 **실차 커브 완주 눈확인 안 됨**. pure_pursuit는 lane_path 점들로 조향하니 인지가 핵심.
+
+### ✅ 완료(07-08): ArUco 정지 배선 (옵션 A "언제든 마커 보이면 정지")
+- `decision_node`가 `/perception/mission_cues` 구독 → `aruco_present`를 `stop_request`로(반응층 최우선 STOP, 사라지면 복귀). `lane_follow.launch.py`에 `mission_cues_node` 편입. **end-to-end 검증**: lane→DRIVE, +aruco→STOP, -aruco→DRIVE. `use_decision:=True`로 활성. 대회 마커 **DICT_6X6_50 ID 3** 확정.
+- ⚠️ 실차에서 "주행 중 마커→정지→복귀" 눈확인 남음. 마커는 **흰 여백(quiet zone) 필수**(없으면 검출 안 됨 — 오늘 삽질). 진단툴 `scripts/aruco_scan.py`(모든 사전 스캔).
+
 ### ⚠️ 07-08: 저속 주행 안 됨 원인 규명(throttle_limit 함정 + 배터리) — 코드수정 없음
 - **증상**: `racer-run enable_drive:=True drive_throttle:=0.28` → 뒷바퀴 삐 소리만, 안 돎. "예전엔 0.18로 됐었는데 이상하다".
 - **원인①(throttle_limit 함정)**: `lane_follow.launch.py` `throttle_limit` **기본값 0.15**. decision이 기본 off라 `speed_scale=1.0`이고, 모터에 가는 값은 `min(drive_throttle, throttle_limit)`. **throttle_limit을 안 주면 drive_throttle을 아무리 올려도 0.15로 클램프됨.** → 0.28 준 게 무의미. (`controller_node.py:284` speed_scale 기본 1.0, `:317-319` clamp)
