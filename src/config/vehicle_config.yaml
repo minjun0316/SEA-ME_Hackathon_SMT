@@ -25,3 +25,15 @@ STORAGE_PATH: /
 IMAGE_DISPLAY_WIDTH: 640
 IMAGE_DISPLAY_HEIGHT: 480
 OPENCV_DEBUG_MODE : true
+
+# 모니터 디버그 그리드에 표시할 화면들(라벨 + CompressedImage 토픽).
+# 여기에 한 줄 추가하면 웹 UI 디버그 패널이 자동 생성된다(재빌드 없이 노드 재시작만).
+# OPENCV_DEBUG_MODE 가 true 여야 그리드가 보인다. DEBUG_CHANNELS 를 지우면
+# 기존 opencv 3종(grayscale/blur/edge)으로 자동 폴백한다.
+DEBUG_CHANNELS:
+  - {label: "Grayscale", topic: "/opencv/image/grayscale"}
+  - {label: "Blur",      topic: "/opencv/image/blur"}
+  - {label: "Edge",      topic: "/opencv/image/edge"}
+  - {label: "YOLO",      topic: "/perception/test/yolo_detect/debug/compressed"}
+  - {label: "Lane",      topic: "/perception/lane/debug/compressed"}
+  - {label: "Lane Edge", topic: "/perception/lane/debug/edges/compressed"}

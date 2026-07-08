@@ -22,10 +22,8 @@ const config = window.MONITOR_CONFIG || {
   statusEndpoint: '/api/status',
   graphEndpoint: '/api/graph',
   frameEndpoint: '/api/frame',
-  debugFrameGrayscaleEndpoint: '/api/frame/grayscale',
-  debugFrameBlurEndpoint: '/api/frame/blur',
-  debugFrameEdgeEndpoint: '/api/frame/edge',
   debugImageEnabled: false,
+  debugChannels: [],
   placeholderUrl: '/api/frame/placeholder',
   refreshIntervalMs: 1000,
   imageRefreshIntervalMs: 150,
@@ -41,10 +39,6 @@ const elements = {
   imageChip: document.getElementById('image-chip'),
   imageUpdated: document.getElementById('image-updated'),
   imageResolution: document.getElementById('image-resolution'),
-  cameraFrame: document.getElementById('camera-frame'),
-  debugFrameGrayscale: document.getElementById('debug-frame-grayscale'),
-  debugFrameBlur: document.getElementById('debug-frame-blur'),
-  debugFrameEdge: document.getElementById('debug-frame-edge'),
   recordBadge: document.getElementById('record-badge'),
   recordBadgeLabel: document.getElementById('record-badge-label'),
   controlCard: document.getElementById('control-card'),
@@ -69,7 +63,6 @@ const elements = {
   graphSummary: document.getElementById('graph-summary'),
 };
 
-let imageRequestInFlight = false;
 let debugImageRequestInFlight = false;
 
 function clampPercent(value) {
@@ -511,25 +504,6 @@ async function fetchStatus() {
   }
 }
 
-function refreshCameraFrame() {
-  if (imageRequestInFlight) {
-    return;
-  }
-
-  imageRequestInFlight = true;
-
-  const image = new Image();
-  image.onload = () => {
-    elements.cameraFrame.src = image.src;
-    imageRequestInFlight = false;
-  };
-  image.onerror = () => {
-    elements.cameraFrame.src = config.placeholderUrl;
-    imageRequestInFlight = false;
-  };
-  image.src = `${config.frameEndpoint}?t=${Date.now()}`;
-}
-
 function refreshImageByEndpoint(targetElement, endpoint) {
   if (!targetElement) {
     return;
@@ -550,23 +524,27 @@ function refreshDebugFrames() {
     return;
   }
 
+  const channels = Array.isArray(config.debugChannels) ? config.debugChannels : [];
+  if (!channels.length) {
+    return;
+  }
+
   debugImageRequestInFlight = true;
-  refreshImageByEndpoint(elements.debugFrameGrayscale, config.debugFrameGrayscaleEndpoint);
-  refreshImageByEndpoint(elements.debugFrameBlur, config.debugFrameBlurEndpoint);
-  refreshImageByEndpoint(elements.debugFrameEdge, config.debugFrameEdgeEndpoint);
+  channels.forEach((channel) => {
+    const targetElement = document.getElementById(`debug-frame-${channel.key}`);
+    refreshImageByEndpoint(targetElement, channel.endpoint);
+  });
   debugImageRequestInFlight = false;
 }
 
 function startPolling() {
   fetchStatus();
   fetchGraph();
-  refreshCameraFrame();
   if (config.debugImageEnabled) {
     refreshDebugFrames();
   }
   window.setInterval(fetchStatus, config.refreshIntervalMs);
   window.setInterval(fetchGraph, config.refreshIntervalMs);
-  window.setInterval(refreshCameraFrame, config.imageRefreshIntervalMs);
   if (config.debugImageEnabled) {
     window.setInterval(refreshDebugFrames, config.imageRefreshIntervalMs);
   }

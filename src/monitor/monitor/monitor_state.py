@@ -4,7 +4,8 @@ import time
 
 
 class MonitorState:
-    def __init__( self, stale_timeout_sec, image_source_width, image_source_height ):
+    def __init__( self, stale_timeout_sec, image_source_width, image_source_height,
+                  debug_keys=None ):
         self._lock = threading.Lock()
         self._stale_timeout_sec = stale_timeout_sec
 
@@ -17,31 +18,13 @@ class MonitorState:
         self._image_height = image_source_height
         self._image_updated_at = None
         self._image_updated_monotonic = None
-        self._debug_frames = {
-            'grayscale': None,
-            'blur': None,
-            'edge': None,
-        }
-        self._debug_widths = {
-            'grayscale': image_source_width,
-            'blur': image_source_width,
-            'edge': image_source_width,
-        }
-        self._debug_heights = {
-            'grayscale': image_source_height,
-            'blur': image_source_height,
-            'edge': image_source_height,
-        }
-        self._debug_updated_at = {
-            'grayscale': None,
-            'blur': None,
-            'edge': None,
-        }
-        self._debug_updated_monotonic = {
-            'grayscale': None,
-            'blur': None,
-            'edge': None,
-        }
+        # 디버그 채널은 config(DEBUG_CHANNELS)로 정해지므로 키 목록을 받아 동적 초기화한다.
+        self._debug_keys = list(debug_keys or [])
+        self._debug_frames = {key: None for key in self._debug_keys}
+        self._debug_widths = {key: image_source_width for key in self._debug_keys}
+        self._debug_heights = {key: image_source_height for key in self._debug_keys}
+        self._debug_updated_at = {key: None for key in self._debug_keys}
+        self._debug_updated_monotonic = {key: None for key in self._debug_keys}
 
         self._throttle = None
         self._steering = None
@@ -173,7 +156,7 @@ class MonitorState:
             and storage_total_bytes is not None
         )
         debug_image = {}
-        for key in ('grayscale', 'blur', 'edge'):
+        for key in self._debug_keys:
             updated_at = debug_updated_at[key]
             debug_image[key] = {
                 'has_data': updated_at is not None,

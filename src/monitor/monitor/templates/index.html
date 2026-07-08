@@ -30,18 +30,9 @@
           <div class="status-card__header">
             <div>
               <p class="status-card__label">Image Status</p>
-              <p class="status-card__subtitle">실시간 카메라 스트림</p>
+              <p class="status-card__subtitle">카메라 상태 · 차선 인지 디버그</p>
             </div>
             <span class="status-chip" id="image-chip">WAITING</span>
-          </div>
-
-          <div class="image-stage">
-            <img
-              id="camera-frame"
-              class="image-stage__frame"
-              src="{{ placeholder_url }}"
-              alt="Camera stream preview"
-            >
           </div>
 
           <dl class="status-meta">
@@ -59,23 +50,15 @@
             </div>
           </dl>
 
-          {% if debug_image %}
+          {% if debug_image and debug_channels %}
           <div class="debug-grid" id="debug-grid">
+            {% for ch in debug_channels %}
             <article class="debug-panel">
-              <p class="debug-panel__title">Grayscale</p>
-              <img id="debug-frame-grayscale" class="debug-panel__frame" src="{{ placeholder_url }}" alt="Grayscale preview">
-              <p class="debug-panel__topic">{{ opencv_grayscale_topic }}</p>
+              <p class="debug-panel__title">{{ ch.label }}</p>
+              <img id="debug-frame-{{ ch.key }}" class="debug-panel__frame" src="{{ placeholder_url }}" alt="{{ ch.label }} preview">
+              <p class="debug-panel__topic">{{ ch.topic }}</p>
             </article>
-            <article class="debug-panel">
-              <p class="debug-panel__title">Blur</p>
-              <img id="debug-frame-blur" class="debug-panel__frame" src="{{ placeholder_url }}" alt="Blur preview">
-              <p class="debug-panel__topic">{{ opencv_blur_topic }}</p>
-            </article>
-            <article class="debug-panel">
-              <p class="debug-panel__title">Edge</p>
-              <img id="debug-frame-edge" class="debug-panel__frame" src="{{ placeholder_url }}" alt="Edge preview">
-              <p class="debug-panel__topic">{{ opencv_edge_topic }}</p>
-            </article>
+            {% endfor %}
           </div>
           {% endif %}
         </article>
@@ -211,11 +194,12 @@
       window.MONITOR_CONFIG = {
         statusEndpoint: {{ url_for('api_status')|tojson }},
         graphEndpoint: {{ url_for('api_graph')|tojson }},
-        frameEndpoint: {{ url_for('api_frame')|tojson }},
-        debugFrameGrayscaleEndpoint: {{ url_for('api_frame_grayscale')|tojson }},
-        debugFrameBlurEndpoint: {{ url_for('api_frame_blur')|tojson }},
-        debugFrameEdgeEndpoint: {{ url_for('api_frame_edge')|tojson }},
         debugImageEnabled: {{ debug_image|tojson }},
+        debugChannels: [
+          {% for ch in debug_channels %}
+          { key: {{ ch.key|tojson }}, label: {{ ch.label|tojson }}, endpoint: {{ url_for('api_frame_debug', key=ch.key)|tojson }} }{% if not loop.last %},{% endif %}
+          {% endfor %}
+        ],
         placeholderUrl: {{ placeholder_url|tojson }},
         refreshIntervalMs: {{ refresh_interval_ms|tojson }},
         imageRefreshIntervalMs: {{ image_refresh_interval_ms|tojson }}

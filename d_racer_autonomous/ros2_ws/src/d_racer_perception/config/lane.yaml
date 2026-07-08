@@ -10,8 +10,8 @@ lane_detect_node:
     debug_jpeg_quality: 80
 
     # --- 픽셀→미터(BEV 기준). 잠정값, 트랙 튜닝 필수 ---
-    m_per_px_forward: 0.005   # BEV 세로 1px 당 전방[m]
-    m_per_px_lateral: 0.005   # BEV 가로 1px 당 횡[m]
+    m_per_px_forward: 0.005    # BEV 세로 1px 당 전방[m] — 아직 잠정(forward 캘리브 미실시)
+    m_per_px_lateral: 0.00119  # BEV 가로 1px 당 횡[m] — 실측 캘리브(07-08): 주황선 0.25m ÷ near행 210px
     x_near_m: 0.15            # 뒷차축→BEV 최하단행 전방거리[m]
 
     # --- BEV 원근 src 비율 ---

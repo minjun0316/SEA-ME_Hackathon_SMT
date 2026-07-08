@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import re
 import shutil
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
@@ -133,10 +134,15 @@ class MonitorNode(Node):
         self.header_logo_path = resolve_resource_path('Telechips-CI-White.png')
         self.telechips_logo_path = resolve_resource_path('Telechips-CI-White.png')
         self.topst_logo_path = resolve_resource_path('TOPST-Logo(White).png')
+
+        # 디버그 화면 채널 목록(config DEBUG_CHANNELS). 없으면 기존 opencv 3종으로 폴백.
+        self.debug_channels = self._build_debug_channels(yaml_config)
+
         self.state = MonitorState(
             stale_timeout_sec,
             image_source_width,
             image_source_height,
+            debug_keys=[ch['key'] for ch in self.debug_channels],
         )
         self.app = create_app(
             self.state,
@@ -153,9 +159,7 @@ class MonitorNode(Node):
             self.image_display_width,
             self.image_display_height,
             self.debug_image,
-            self.opencv_grayscale_topic,
-            self.opencv_blur_topic,
-            self.opencv_edge_topic,
+            self.debug_channels,
             graph_snapshot_provider=self.get_graph_snapshot,
         )
         self.server_thread = FlaskServerThread(self.app, self.web_host, self.web_port)
@@ -173,24 +177,13 @@ class MonitorNode(Node):
             10,
         )
         if self.debug_image:
-            self.create_subscription(
-                CompressedImage,
-                self.opencv_grayscale_topic,
-                self.debug_grayscale_callback,
-                10,
-            )
-            self.create_subscription(
-                CompressedImage,
-                self.opencv_blur_topic,
-                self.debug_blur_callback,
-                10,
-            )
-            self.create_subscription(
-                CompressedImage,
-                self.opencv_edge_topic,
-                self.debug_edge_callback,
-                10,
-            )
+            for channel in self.debug_channels:
+                self.create_subscription(
+                    CompressedImage,
+                    channel['topic'],
+                    self._make_debug_callback(channel['key'], channel['topic']),
+                    10,
+                )
         self.create_subscription(
             Control,
             self.control_topic,
@@ -226,6 +219,56 @@ class MonitorNode(Node):
 
     def get_graph_snapshot(self):
         return build_graph_snapshot(self)
+
+    @staticmethod
+    def _slugify(text):
+        """@brief 라벨 → URL/상태키로 쓸 슬러그(영숫자+언더스코어)."""
+        slug = re.sub(r'[^a-z0-9]+', '_', str(text).lower()).strip('_')
+        return slug or 'ch'
+
+    def _build_debug_channels(self, yaml_config):
+        """@brief config DEBUG_CHANNELS(label/topic 리스트) → 정규화된 채널 목록.
+
+        @details 각 채널 = {key, label, topic}. key는 URL/상태 딕셔너리 키로 쓰이며
+                 중복되면 접미사(_2, _3...)로 유일화한다. DEBUG_CHANNELS가 없으면
+                 기존 opencv 3종(grayscale/blur/edge)으로 폴백해 하위호환 유지.
+        """
+        raw = yaml_config.get('DEBUG_CHANNELS')
+        channels = []
+
+        if isinstance(raw, list) and raw:
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                topic = str(item.get('topic', '')).strip()
+                if not topic:
+                    continue
+                label = str(item.get('label', topic)).strip() or topic
+                key = str(item.get('key', '')).strip() or self._slugify(label)
+                channels.append({'key': key, 'label': label, 'topic': topic})
+        else:
+            legacy = [
+                ('grayscale', 'Grayscale', self.opencv_grayscale_topic),
+                ('blur', 'Blur', self.opencv_blur_topic),
+                ('edge', 'Edge', self.opencv_edge_topic),
+            ]
+            for key, label, topic in legacy:
+                if topic:
+                    channels.append({'key': key, 'label': label, 'topic': topic})
+
+        # 키 유일화(중복 라벨/토픽 대비).
+        seen = set()
+        for channel in channels:
+            base = channel['key']
+            unique = base
+            suffix = 1
+            while unique in seen:
+                suffix += 1
+                unique = f'{base}_{suffix}'
+            channel['key'] = unique
+            seen.add(unique)
+
+        return channels
 
     def load_vehicle_config(self):
         if not os.path.exists(self.vehicle_config_file):
@@ -310,14 +353,13 @@ class MonitorNode(Node):
         except Exception as exc:
             self.get_logger().error(f'Failed to process {topic} frame: {exc}')
 
-    def debug_grayscale_callback(self, msg):
-        self._debug_image_callback(msg, 'grayscale', self.opencv_grayscale_topic)
+    def _make_debug_callback(self, image_key, topic):
+        """@brief 채널별 디버그 콜백 생성(루프 클로저 캡처 버그 방지)."""
 
-    def debug_blur_callback(self, msg):
-        self._debug_image_callback(msg, 'blur', self.opencv_blur_topic)
+        def _callback(msg):
+            self._debug_image_callback(msg, image_key, topic)
 
-    def debug_edge_callback(self, msg):
-        self._debug_image_callback(msg, 'edge', self.opencv_edge_topic)
+        return _callback
 
     def joystick_callback(self, msg):
         self.state.update_recording(msg.is_recording)

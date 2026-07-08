@@ -75,6 +75,8 @@ class LaneResult:
     # lane_path: (x,y) 미터, base_link, near→far
     lane_path: List[Tuple[float, float]] = field(default_factory=list)
     debug_image: Optional[np.ndarray] = None
+    # 중간 파이프라인 단계(이름→이미지). want_debug일 때만 채움. 예: {'bev':..., 'edges':...}
+    debug_stages: dict = field(default_factory=dict)
 
 
 class LaneDetector:
@@ -154,6 +156,11 @@ class LaneDetector:
                 cx0 = int(centerline_px[0][0])
                 cv2.circle(debug, (cx0, h - 40), 5, (0, 255, 0), -1)
         res.debug_image = debug
+
+        # 중간 단계 노출(모니터 디버그 화면용). BEV=원근변환, edges=Canny 결과.
+        if want_debug:
+            res.debug_stages = {'bev': bev, 'edges': edges}
+
         return res
 
     # ------------------------------------------------------------------ #

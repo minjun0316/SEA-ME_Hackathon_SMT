@@ -115,6 +115,8 @@ class LaneDetectNode(Node):
         if self.publish_debug:
             self.pub_debug = self.create_publisher(
                 CompressedImage, 'perception/lane/debug/compressed', 1)
+        # 중간단계(bev/edges 등) 퍼블리셔는 처음 등장할 때 생성(core가 내보내는 키에 맞춤).
+        self._stage_pubs: dict = {}
 
         # 카메라 구독(best-effort로 최신 프레임만).
         self.sub = self.create_subscription(
@@ -172,16 +174,19 @@ class LaneDetectNode(Node):
 
         # --- 디버그 오버레이 ---
         if self.pub_debug is not None and res.debug_image is not None:
-            ok, enc = cv2.imencode(
-                '.jpg', res.debug_image,
-                [int(cv2.IMWRITE_JPEG_QUALITY), self.debug_quality])
-            if ok:
-                dbg = CompressedImage()
-                dbg.header.stamp = stamp
-                dbg.header.frame_id = self.base_frame
-                dbg.format = 'jpeg'
-                dbg.data = enc.tobytes()
-                self.pub_debug.publish(dbg)
+            self._publish_jpeg(self.pub_debug, res.debug_image, stamp)
+
+        # --- 중간단계 디버그(bev/edges 등): perception/lane/debug/<stage>/compressed ---
+        if self.publish_debug and res.debug_stages:
+            for name, img in res.debug_stages.items():
+                if img is None:
+                    continue
+                pub = self._stage_pubs.get(name)
+                if pub is None:
+                    pub = self.create_publisher(
+                        CompressedImage, f'perception/lane/debug/{name}/compressed', 1)
+                    self._stage_pubs[name] = pub
+                self._publish_jpeg(pub, img, stamp)
 
         self._frames += 1
         if self._frames % 30 == 0:
@@ -190,6 +195,19 @@ class LaneDetectNode(Node):
                 f'off={res.lateral_offset:+.3f}m head={res.heading_error:+.3f}rad '
                 f'pts={res.num_points} stop={res.stop_line} '
                 f'stopdist={res.stop_line_dist:.2f}m')
+
+    def _publish_jpeg(self, pub, img, stamp):
+        """@brief numpy 이미지(BGR 또는 그레이) → JPEG CompressedImage 발행."""
+        ok, enc = cv2.imencode(
+            '.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), self.debug_quality])
+        if not ok:
+            return
+        msg = CompressedImage()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self.base_frame
+        msg.format = 'jpeg'
+        msg.data = enc.tobytes()
+        pub.publish(msg)
 
 
 def main(args=None):
