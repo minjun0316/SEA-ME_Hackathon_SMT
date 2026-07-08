@@ -1,0 +1,126 @@
+"""@file aruco_detect.py
+@brief ArUco 마커 검출 (ROS-free) — 미션 M4 장애물 구역 정지/재출발 신호.
+
+@details
+`cv2.aruco`로 프레임에서 ArUco 마커를 찾아 `aruco_present`(bool)를 낸다. YOLO 학습이
+필요 없는 고전 CV라 대회 전 바로 쓸 수 있다. 로직은 여기(core)에 있고 ROS 노드는
+구독/디코드/발행만 한다(시뮬↔실차 일원화, 하드코딩 금지·파라미터 YAML).
+
+@par 계약
+- 미션(`core.planning.mission`)은 `MissionObservation.aruco_present`만 소비한다
+  (장애물 구역에서 마커가 보이는 동안 STOP, 사라지면 재출발).
+- 마커는 **하단 ROI**에서 본다(mission_fsm: roi_mode LOWER_ARUCO). 배경 오검 방지.
+
+@note OpenCV 4.7+/5.x 신 API(`ArucoDetector`) 기준. 구버전(`detectMarkers` 함수형)도
+      폴백 지원. 사전(dictionary)·ROI·최소크기·대상 ID는 전부 config로 조정.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+
+import cv2
+import numpy as np
+
+
+@dataclass
+class ArucoConfig:
+    """@brief ArUco 검출 파라미터(전부 YAML/CLI 조정). 값은 대회 마커 확정 후 튜닝."""
+    dictionary: str = "DICT_6X6_50"   ##< cv2.aruco.DICT_* 이름. 대회 마커 확정(07-08): 6X6_50.
+    roi_bottom_frac: float = 1.0      ##< 하단에서 볼 세로 비율(1.0=전체, 0.5=아래 절반).
+    min_perimeter_px: float = 0.0     ##< 이 둘레(px) 미만 마커 무시(먼 오검 컷). 0=끔.
+    target_ids: Tuple[int, ...] = ()  ##< 이 ID만 present로 인정. 비면 아무 마커나 인정.
+
+
+@dataclass
+class ArucoResult:
+    """@brief 한 프레임 검출 결과."""
+    present: bool                       ##< 유효 마커 검출 여부(→ mission_cues.aruco_present).
+    ids: List[int] = field(default_factory=list)  ##< 검출·필터 통과한 마커 ID들.
+    num_markers: int = 0                ##< 필터 통과 마커 개수.
+    debug_image: Optional[np.ndarray] = None  ##< 오버레이(want_debug=True일 때).
+
+
+# cv2.aruco.DICT_* 이름 → 상수. 존재하는 것만 매핑(버전차 안전).
+def _resolve_dictionary(name: str):
+    ar = cv2.aruco
+    const = getattr(ar, name, None)
+    if const is None:
+        raise ValueError(
+            f"ArucoConfig.dictionary='{name}' 은(는) 이 OpenCV(cv2.aruco)에 없습니다. "
+            f"예: DICT_4X4_50 / DICT_5X5_100 / DICT_6X6_250")
+    if hasattr(ar, "getPredefinedDictionary"):      # 4.7+/5.x
+        return ar.getPredefinedDictionary(const)
+    return ar.Dictionary_get(const)                  # 구버전 폴백
+
+
+class ArucoDetector:
+    """@brief BGR 프레임 → ArUcoResult. 상태 없음(디바운스는 노드가 담당)."""
+
+    def __init__(self, cfg: Optional[ArucoConfig] = None):
+        self.cfg = cfg or ArucoConfig()
+        self._dict = _resolve_dictionary(self.cfg.dictionary)
+        ar = cv2.aruco
+        # 신 API(ArucoDetector) 우선, 없으면 함수형 폴백.
+        self._detector = None
+        if hasattr(ar, "ArucoDetector"):
+            params = ar.DetectorParameters() if hasattr(ar, "DetectorParameters") \
+                else ar.DetectorParameters_create()
+            self._detector = ar.ArucoDetector(self._dict, params)
+        else:
+            self._params = ar.DetectorParameters_create()
+
+    def _detect_markers(self, gray: np.ndarray):
+        """@brief 버전차 흡수: (corners, ids) 반환."""
+        if self._detector is not None:               # 신 API
+            corners, ids, _ = self._detector.detectMarkers(gray)
+        else:                                        # 구 API
+            corners, ids, _ = cv2.aruco.detectMarkers(
+                gray, self._dict, parameters=self._params)
+        return corners, ids
+
+    def detect(self, frame_bgr: np.ndarray, want_debug: bool = False) -> ArucoResult:
+        """@brief 하단 ROI에서 마커 검출 → 필터(크기/ID) → present 판정."""
+        if frame_bgr is None or frame_bgr.size == 0:
+            return ArucoResult(present=False)
+
+        h = frame_bgr.shape[0]
+        frac = min(max(self.cfg.roi_bottom_frac, 0.05), 1.0)
+        y0 = int(round(h * (1.0 - frac)))            # ROI 시작 행(하단만).
+        roi = frame_bgr[y0:, :]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+        corners, ids = self._detect_markers(gray)
+
+        kept_ids: List[int] = []
+        kept_corners = []
+        if ids is not None and len(ids) > 0:
+            targets = set(self.cfg.target_ids)
+            for c, i in zip(corners, ids.flatten().tolist()):
+                if targets and i not in targets:
+                    continue
+                if self.cfg.min_perimeter_px > 0.0:
+                    peri = cv2.arcLength(c.reshape(-1, 2).astype(np.float32), True)
+                    if peri < self.cfg.min_perimeter_px:
+                        continue
+                kept_ids.append(int(i))
+                kept_corners.append(c)
+
+        present = len(kept_ids) > 0
+
+        debug = None
+        if want_debug:
+            debug = frame_bgr.copy()
+            # ROI 경계선 표시.
+            cv2.line(debug, (0, y0), (debug.shape[1], y0), (0, 200, 255), 1)
+            if kept_corners:
+                shifted = [c + np.array([0.0, float(y0)], dtype=c.dtype)
+                           for c in kept_corners]
+                cv2.aruco.drawDetectedMarkers(
+                    debug, shifted, np.array(kept_ids).reshape(-1, 1))
+            label = f"ARUCO {'PRESENT' if present else '-'} ids={kept_ids}"
+            cv2.putText(debug, label, (8, 22), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6, (0, 255, 0) if present else (0, 0, 255), 2)
+
+        return ArucoResult(present=present, ids=kept_ids,
+                           num_markers=len(kept_ids), debug_image=debug)

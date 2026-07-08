@@ -73,7 +73,7 @@ if _CORE_ROOT not in sys.path:
 import rclpy  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 
-from racer_msgs.msg import DriveCommand, LaneStatus  # noqa: E402
+from racer_msgs.msg import DriveCommand, LaneStatus, MissionCues  # noqa: E402
 
 from core.config_schema import load_config  # noqa: E402
 from core.planning import DecisionMaker, DriveState, LaneObservation  # noqa: E402

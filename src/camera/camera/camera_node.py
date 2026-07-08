@@ -31,14 +31,19 @@ class CameraNode(Node):
         self.declare_parameter('flip_method', 'none')
         self.declare_parameter('jpeg_quality', 90)
         self.declare_parameter('debug_log', True)
+        self.declare_parameter('opencv_threads', 1)
 
         self.vehicle_config_file = os.path.expanduser(
             str(self.get_parameter('vehicle_config_file').value)
         )
         publish_topic = str(self.get_parameter('publish_topic').value)
         publish_hz = float(self.get_parameter('publish_hz').value)
+        # 실시간성: vehicle_config CAMERA_PUBLISH_HZ 가 있으면 우선(4코어 경합 완화용 15fps).
+        publish_hz = self.load_publish_hz(publish_hz)
         if publish_hz <= 0.0:
             raise ValueError('publish_hz must be greater than 0')
+        # 스레드 과다구독 방지: OpenCV(캡처 후 리사이즈/JPEG) 코어 제한.
+        cv2.setNumThreads(int(self.get_parameter('opencv_threads').value))
         default_camera_device = str(self.get_parameter('camera_device').value)
         usb_camera_device = str(self.get_parameter('usb_camera_device').value)
         mipi_camera_device = str(self.get_parameter('mipi_camera_device').value)
@@ -99,6 +104,20 @@ class CameraNode(Node):
             f'[vehicle_config_file] : {self.vehicle_config_file} \n'
             f'[debug_log] : {self.debug_log} \n'
         )
+
+    def load_publish_hz(self, default_hz):
+        """@brief vehicle_config의 CAMERA_PUBLISH_HZ 로 발행 주기 재정의(없으면 기본값)."""
+        if not os.path.exists(self.vehicle_config_file):
+            return default_hz
+        try:
+            with open(self.vehicle_config_file, 'r', encoding='utf-8') as config_stream:
+                config_data = yaml.safe_load(config_stream) or {}
+        except Exception as exc:
+            self.get_logger().warning(
+                f'Failed to read vehicle config file {self.vehicle_config_file}: {exc}'
+            )
+            return default_hz
+        return float(config_data.get('CAMERA_PUBLISH_HZ', default_hz))
 
     def load_image_size(self):
         default_size = (640, 480)

@@ -8,10 +8,10 @@ from launch_ros.actions import Node
 
 def get_default_model_path():
     for base_path in Path(__file__).resolve().parents:
-        candidate = base_path / 'models' / 'yolo_detect_test.pt'
+        candidate = base_path / 'models' / 'best_ncnn_model'
         if candidate.exists():
             return str(candidate)
-    return 'yolo_detect_test.pt'
+    return 'best_ncnn_model'
 
 
 def generate_launch_description():
@@ -19,7 +19,7 @@ def generate_launch_description():
         DeclareLaunchArgument('image_topic', default_value='camera/image/compressed'),
         DeclareLaunchArgument('model_path', default_value=get_default_model_path()),
         DeclareLaunchArgument('conf', default_value='0.25'),
-        DeclareLaunchArgument('imgsz', default_value='640'),
+        DeclareLaunchArgument('imgsz', default_value='320'),
         DeclareLaunchArgument('publish_debug', default_value='True'),
         Node(
             package='d_racer_perception',

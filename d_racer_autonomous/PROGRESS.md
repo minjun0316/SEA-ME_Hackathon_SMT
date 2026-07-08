@@ -1,6 +1,6 @@
 # D-Racer 자율주행 — 진행 상황 / 다음 할 일
 
-> 마지막 작업일: 2026-07-07. 이 문서는 매 세션 끝에 갱신한다.
+> 마지막 작업일: 2026-07-08. 이 문서는 매 세션 끝에 갱신한다.
 >
 > **작업 환경 변경(07-03)**: 이제 보드에서 직접 편집·빌드·커밋한다. 워크스페이스=팀레포 `~/SEA-ME_Hackathon_SMT`(= colcon ws, `build/ install/ src/` 포함). 옛 `~/D-Racer-Kit`는 통합되어 없어짐. scp 왕복 불필요.
 
@@ -9,7 +9,22 @@ ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료,
 
 ---
 
-## ▶ 다음 세션 여기서 시작 (2026-07-07 마감 기준)
+## ▶ 다음 세션 여기서 시작 (2026-07-08 마감 기준)
+
+### ⚠️ 07-08: 저속 주행 안 됨 원인 규명(throttle_limit 함정 + 배터리) — 코드수정 없음
+- **증상**: `racer-run enable_drive:=True drive_throttle:=0.28` → 뒷바퀴 삐 소리만, 안 돎. "예전엔 0.18로 됐었는데 이상하다".
+- **원인①(throttle_limit 함정)**: `lane_follow.launch.py` `throttle_limit` **기본값 0.15**. decision이 기본 off라 `speed_scale=1.0`이고, 모터에 가는 값은 `min(drive_throttle, throttle_limit)`. **throttle_limit을 안 주면 drive_throttle을 아무리 올려도 0.15로 클램프됨.** → 0.28 준 게 무의미. (`controller_node.py:284` speed_scale 기본 1.0, `:317-319` clamp)
+- **원인②(배터리)**: 예전엔 그 clamp된 0.15가 모터 breakaway 위였음("0.18로 됐었어"). 배터리 방전으로 breakaway가 0.15 위로 올라가 → 같은 0.15인데 삐 소리. **→ 충전이 정답.** 충전 중.
+- **핵심 인지사항(다음에 또 헷갈림)**: `racer-run`은 **control_node(모터)까지 기본 포함**(따로 안 띄워도 됨). **decision_node는 기본 off**(`use_decision:=True`로 켬) → 지금은 ×0.9(SLOW) 안 걸리고 **drive_throttle이 곧 실제 throttle**.
+- **★ 충전 완료 후 바로 할 것**: `racer-run enable_drive:=True drive_throttle:=0.16 throttle_limit:=0.20`. 안 돌면 0.17→0.18로 조금씩 ↑(막 도는 값=최저속도, 안정주행은 +0.02). 완충이면 저속 가능할 것.
+- alias(참고): `racer-run`(실행) / `racer-clean`(노드 kill) / `stop`(비상정지). `.bashrc`가 ROS+workspace 3개 자동 source.
+
+### ✅ 완료(07-08): ArUco 미션신호 인지 노드(학습 불필요, 고전 CV) — 실차 미검증
+- **`core/perception/aruco_detect.py`(신규, ROS-free)**: `cv2.aruco`(OpenCV 5.0.0 신 API) 검출기. `ArucoConfig`(dictionary/roi_bottom_frac/min_perimeter_px/target_ids) + `ArucoResult`. 하단 ROI·크기·ID 필터. 합성 마커로 검출 로직 검증.
+- **`d_racer_perception/mission_cues_node.py`(신규, 얇은 노드)**: camera/image/compressed 구독 → `/perception/mission_cues`(racer_msgs/MissionCues, reliable) 발행 + 디버그영상(`perception/mission_cues/aruco/debug/compressed`). aruco만 실제값, traffic_light/checkerboard/red_zone은 **stub**(후속). present 홀드(hold_sec=0.4) 디바운스.
+- **대회 마커 확정(07-08)**: **DICT_6X6_50, ID 3**. `config/mission_cues.yaml`에 반영. 검증: 6X6_50 ID3 검출 OK, 잘못된 사전(4x4)이면 미검출(사전 일치가 결정적).
+- **시나리오**: 심판이 막대에 든 마커를 멀리서 보여주면 정지, 사라지면 재출발. → roi=전체화면, ID 3만 인정. setup.py entry_point 등록, 중첩 ws(`d_racer_autonomous/ros2_ws`) colcon 빌드 OK, 노드 기동 OK.
+- **⚠️ 미완**: (1) 실차 카메라로 실제 마커 검출 눈확인, (2) `aruco_present`→**정지 연결**(현재 발행만; mission.py는 M4에서만 반응. "언제든 정지" 게이트 여부 미정), (3) mission_cues_node를 launch에 편입, (4) 미커밋.
 
 ### ✅ 완료(07-07 낮): 실차 첫 주행(거치대) + control_node watchdog(안전버그 수정)
 - **거치대에서 폐루프 첫 주행 성공**: `lane_follow`(enable_drive:=True drive_throttle:=0.25 throttle_limit:=0.30)로 뒷바퀴 실제 구동 + 차선 따라 조향 확인.
@@ -93,6 +108,8 @@ cd ~/SEA-ME_Hackathon_SMT && source /opt/ros/humble/setup.bash && source install
 **착수 전 확인**: `docs/interfaces.md §9 결정 대기 4건`(lane_path 타입=nav_msgs/Path, 패키지명 racer_msgs, base_link 원점=뒷차축, 정지선 우선) 팀 합의.
 
 **미해결/주의**
+- ⚠️ **throttle_limit 함정(07-08)**: `lane_follow.launch.py` `throttle_limit` 기본 **0.15**. decision off면 모터 throttle=`min(drive_throttle, throttle_limit)`이라, **throttle_limit을 안 주면 drive_throttle이 전부 0.15로 잘림**. 저속 주행 시 `drive_throttle`과 `throttle_limit`을 **항상 같이** 줄 것(예: `drive_throttle:=0.16 throttle_limit:=0.20`). 필요하면 launch 기본값을 0.15→0.25로 올리는 것도 고려(안전캡이라 보류 중).
+- ⚠️ **모터 breakaway는 배터리 전압에 민감**. 완충이면 0.15~0.18로도 돌지만 방전되면 breakaway가 올라가 삐 소리만. 저속 주행엔 완충 배터리 필수.
 - ⚠️ **보드 OpenCV 5.0.0 = GStreamer:NO**. `cv2.VideoCapture(..., CAP_GSTREAMER)`는 무조건 실패한다(카메라는 V4L2/FFMPEG로만 열림, `/dev/video1` 정상). camera_node에 V4L2 폴백 넣어 해결했지만, OpenCV 재설치/다른 GStreamer 의존 코드 쓸 때 재발 주의. 확인: `python3 -c "import cv2;print(cv2.getBuildInformation())" | grep GStreamer`.
 - collect1/SECOND 학습사진 보드 디스크에 없음 → Roboflow/데스크탑 확인 or 재수집.
 - 배터리 방전 잦음 → 완충 여분 필수. i2c 먹통 시 점퍼선 재체결.

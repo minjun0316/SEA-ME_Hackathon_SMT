@@ -12,26 +12,22 @@ the D3G board. It does not publish final driving commands.
 > Lane detection is handled separately with an OpenCV-based pipeline; YOLO here
 > is used only for object detection.
 
-## Download Models On D3G
+## Models
+
+The node uses our own model trained on the SEA-ME track dataset
+(classes: `checker`, `green`, `red`, `stop_line`). Place the trained weights
+under `models/`:
+
+- `models/best.pt` (torch weights)
+- `models/best_ncnn_model/` (NCNN, `imgsz=320` — used by the node by default)
+
+The NCNN model is exported from `best.pt` for faster on-board inference:
 
 ```bash
-cd ~/SEA-ME_Hackathon_SMT/d_racer_autonomous/ros2_ws/src/d_racer_perception
-bash scripts/download_test_models.sh
+python3 -c "from ultralytics import YOLO; YOLO('models/best.pt').export(format='ncnn', imgsz=320)"
 ```
 
-By default, the script downloads the Ultralytics `yolo26n` pretrained detection
-model, saves it as `models/yolo_detect_test.pt`, and exports an NCNN model
-(`imgsz=320`) for faster on-board inference:
-
-- `models/yolo_detect_test.pt` (torch)
-- `models/yolo_detect_test_ncnn_model/` (NCNN — used by the node)
-
-To use a team-selected URL instead:
-
-```bash
-DETECT_MODEL_URL="https://example.com/detect.pt" \
-bash scripts/download_test_models.sh
-```
+Model weights are not committed (see `.gitignore`); copy them onto the D3G board.
 
 ## On-Board Performance (D3-G, TCC8050 / Cortex-A72 x4)
 

@@ -8,6 +8,9 @@ IMAGE_HEIGHT: 160
 # 잘린다. 16:9로 캡처해 곡선에서 양쪽 차선 화각 확보. 출력은 IMAGE_*로 리사이즈.
 CAPTURE_WIDTH: 640
 CAPTURE_HEIGHT: 360
+# 실시간성(4코어 CPU 경합 완화): 카메라 발행 주기. 30→15로 lane_detect·모니터 부하
+# 절반. lane_timeout(0.3s) 대비 15fps(66ms)는 충분히 안전.
+CAMERA_PUBLISH_HZ: 15
 ROI_TOP: 50
 ROI_LEFT: 0
 

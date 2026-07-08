@@ -1,8 +1,12 @@
 yolo_detect_test_node:
   ros__parameters:
     image_topic: camera/image/compressed
-    model_path: yolo_detect_test_ncnn_model
+    model_path: best_ncnn_model
     conf: 0.25
     imgsz: 320
     publish_debug: true
     debug_jpeg_quality: 80
+    # 실시간성(4코어 경합 완화): 추론 상한 fps + 스레드 상한.
+    max_infer_hz: 8.0
+    cv_threads: 1
+    torch_threads: 2

@@ -211,6 +211,9 @@ class LaneDetectNode(Node):
 
 
 def main(args=None):
+    # 스레드 과다구독 방지(4코어 경합 완화): OpenCV 스레드 상한.
+    # 기본 1, 필요 시 env LANE_CV_THREADS 로 조정.
+    cv2.setNumThreads(int(os.environ.get('LANE_CV_THREADS', '1')))
     rclpy.init(args=args)
     node = LaneDetectNode()
     try:

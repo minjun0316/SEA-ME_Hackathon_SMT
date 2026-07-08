@@ -1,14 +1,16 @@
-# Test Models
+# Models
 
-Downloaded model files are placed here on the D3G board.
+Trained model weights are placed here on the D3G board.
 
 Expected files:
 
-- `yolo_detect_test.pt` (torch weights)
-- `yolo_detect_test_ncnn_model/` (NCNN model used by the node)
+- `best.pt` (torch weights, trained on the SEA-ME track dataset:
+  `checker`, `green`, `red`, `stop_line`)
+- `best_ncnn_model/` (NCNN model used by the node by default, `imgsz=320`)
 
-Do not commit model weights. Run:
+Do not commit model weights (see `.gitignore`). Export the NCNN model from
+`best.pt` with:
 
 ```bash
-bash scripts/download_test_models.sh
+python3 -c "from ultralytics import YOLO; YOLO('best.pt').export(format='ncnn', imgsz=320)"
 ```

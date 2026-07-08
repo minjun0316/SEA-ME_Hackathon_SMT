@@ -1,0 +1,16 @@
+# mission_cues_node 파라미터 (core.perception.aruco_detect.ArucoConfig 미러)
+# 현재 ArUco만 구현. 대회 마커 확정 후 dictionary/target_ids 재확인.
+mission_cues_node:
+  ros__parameters:
+    image_topic: camera/image/compressed
+    mission_cues_topic: /perception/mission_cues
+    base_frame: base_link
+    publish_debug: true
+    debug_jpeg_quality: 80
+
+    # --- ArUco (막대에 든 마커를 멀리서 보여줌 → 정지, 사라지면 재출발) ---
+    aruco_dictionary: DICT_6X6_50   # 대회 마커 확정: 6x6, ID 3 (2026-07-08)
+    aruco_target_ids: [3]           # ID 3만 정지 트리거로 인정. []/음수면 아무 마커나
+    aruco_roi_bottom_frac: 1.0      # 화면 전체(막대로 멀리서 보여주므로 하단 ROI 아님)
+    aruco_min_perimeter_px: 0.0     # 이 둘레(px) 미만 마커 무시. 0=끔. 원거리 오검 나면 ↑
+    aruco_hold_sec: 0.4             # 마커 잠깐 놓쳐도 이 시간 present 유지(흔들림→튐 방지)

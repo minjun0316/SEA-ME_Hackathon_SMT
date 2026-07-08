@@ -5,7 +5,8 @@
 스택: camera_node → lane_detect_node → controller_node(source=topic) → control_node(키트 서보/모터).
 이제 **키트 액추에이터 노드까지 이 런치가 포함**한다(T1 따로 띄울 필요 없음).
 텔레메트리로 battery_node(전압 감시)·monitor_node(웹 UI)도 기본 포함(각각 use_battery/use_monitor 로 끔).
-YOLO 객체인식·미션(mission_node)은 **제외** — 차선 추종만 검증한다.
+YOLO 객체인식은 use_yolo(기본 True)로 함께 띄운다(관측·디버그용, 주행엔 무관).
+미션(mission_node)은 **제외** — 차선 추종만 검증한다.
 판단(decision_node)은 라인트래킹엔 불필요하므로 기본 off(use_decision:=True 로 켬).
 
 @par 실행
@@ -36,6 +37,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     perc_pkg = get_package_share_directory('d_racer_perception')
     lane_cfg = os.path.join(perc_pkg, 'config', 'lane.yaml')
+    yolo_cfg = os.path.join(perc_pkg, 'config', 'yolo_detect_test.yaml')
 
     args = [
         DeclareLaunchArgument('use_camera', default_value='True',
@@ -48,6 +50,8 @@ def generate_launch_description():
                               description='battery_node(전압 감시). 저전압 컷오프 대비 기본 on'),
         DeclareLaunchArgument('use_monitor', default_value='True',
                               description='monitor_node(웹 UI: 카메라/디버그/조향 시각화)'),
+        DeclareLaunchArgument('use_yolo', default_value='True',
+                              description='yolo_detect_test_node(객체인식 디버그). 웹 YOLO 패널용, 끄려면 False'),
         DeclareLaunchArgument('lane_config', default_value=lane_cfg,
                               description='lane_detect_node 파라미터 YAML'),
         DeclareLaunchArgument('control_topic', default_value='/control'),
@@ -132,5 +136,17 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_monitor')),
     )
 
+    # 8) YOLO 객체인식(옵션): camera → best 모델 추론 → 디버그 이미지 발행(웹 YOLO 패널).
+    #    config/yolo_detect_test.yaml 로 모델(best_ncnn_model)/imgsz(320) 등을 물린다.
+    #    노드명은 yaml 최상위 키(yolo_detect_test_node)와 일치해야 파라미터가 적용된다.
+    yolo = Node(
+        package='d_racer_perception',
+        executable='yolo_detect_test_node',
+        name='yolo_detect_test_node',
+        output='screen',
+        parameters=[yolo_cfg],
+        condition=IfCondition(LaunchConfiguration('use_yolo')),
+    )
+
     return LaunchDescription(
-        args + [camera, lane, decision, controller, control, battery, monitor])
+        args + [camera, lane, decision, controller, control, battery, monitor, yolo])

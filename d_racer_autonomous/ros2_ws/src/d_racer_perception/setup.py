@@ -27,6 +27,9 @@ setup(
          files_only('config/*.yaml')),
         (os.path.join('share', package_name, 'models'),
          files_only('models/*')),
+        # NCNN 모델은 디렉토리라 files_only('models/*')에 안 잡힌다 → 별도 설치 규칙.
+        (os.path.join('share', package_name, 'models', 'best_ncnn_model'),
+         files_only('models/best_ncnn_model/*')),
         (os.path.join('share', package_name, 'test_data'),
          files_only('test_data/*')),
         (os.path.join('share', package_name, 'scripts'),
@@ -43,6 +46,7 @@ setup(
         'console_scripts': [
             'yolo_detect_test_node = d_racer_perception.yolo_detect_test_node:main',
             'lane_detect_node = d_racer_perception.lane_detect_node:main',
+            'mission_cues_node = d_racer_perception.mission_cues_node:main',
         ],
     },
 )

@@ -4,7 +4,7 @@
 사용법:
   python3 scripts/bench_yolo.py                                         # NCNN, 320
   python3 scripts/bench_yolo.py --imgsz 416                             # 해상도 변경
-  python3 scripts/bench_yolo.py --model models/yolo_detect_test.pt      # torch 원본과 비교
+  python3 scripts/bench_yolo.py --model models/best.pt                  # torch 원본과 비교
   python3 scripts/bench_yolo.py --threads 2                             # torch 코어 제한
 """
 import argparse
@@ -16,7 +16,7 @@ import numpy as np
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="models/yolo_detect_test_ncnn_model")
+    ap.add_argument("--model", default="models/best_ncnn_model")
     ap.add_argument("--imgsz", type=int, default=320)
     ap.add_argument("--warmup", type=int, default=3)
     ap.add_argument("--runs", type=int, default=20)
