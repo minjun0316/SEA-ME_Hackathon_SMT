@@ -47,6 +47,11 @@ class LaneCalib:
     nwindows: int = 9
     margin: int = 30
     minpix: int = 5
+    # seed(탐색 시작 x): 직전 프레임 confidence가 이 값 이상이면 '추종 중(lock)'으로
+    # 보고 직전 피팅 near-x를 그대로 시드로 쓴다(search-around-poly) → 곡선 연속추종.
+    # 미만이면 'lost'로 보고 하단 히스토그램으로 재획득. midpoint 고정분할 히스토그램은
+    # 곡선에서 양 차선이 한쪽으로 쏠릴 때 좌우를 뒤바꾸므로 lost일 때만 최소로 쓴다.
+    seed_lock_conf: float = 0.25
     # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
     # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
     lane_width_px: float = 180.0
@@ -102,6 +107,7 @@ class LaneDetector:
         self._M_size: Optional[Tuple[int, int]] = None
         self._last_leftx = 0.0
         self._last_rightx = 0.0
+        self._last_conf = 0.0        ##< 직전 프레임 confidence. seed lock/lost 판정용.
         self._lane_width_px = None   ##< 두 선 다 보일 때 학습한 차선폭[px]. None이면 config 기본값.
 
     # ------------------------------------------------------------------ #
@@ -208,16 +214,23 @@ class LaneDetector:
         h, w = edges.shape[:2]
         midpoint = w // 2
 
-        # 하단 40% 히스토그램으로 시작 x(직전값과 EMA)
-        hist = np.sum(edges[int(h * 0.6):, :], axis=0)
-        cur_left = int(np.argmax(hist[:midpoint])) if midpoint > 0 else 0
-        cur_right = int(np.argmax(hist[midpoint:]) + midpoint) if w > midpoint else midpoint
-        leftx = int(self._last_leftx * 0.8 + cur_left * 0.2)
-        rightx = int(self._last_rightx * 0.8 + cur_right * 0.2)
+        # 시작 x seed 결정: lock(추종 중)이면 직전 피팅 near-x를 그대로 써서 곡선을
+        # 연속 추종(search-around-poly). lost면 하단 히스토그램으로 좌/우 재획득.
+        # midpoint 고정분할은 곡선에서 좌우를 뒤바꾸므로 lost일 때만 경로에 탄다.
+        if self._last_conf >= c.seed_lock_conf:
+            leftx = int(self._last_leftx)
+            rightx = int(self._last_rightx)
+        else:
+            hist = np.sum(edges[int(h * 0.6):, :], axis=0)
+            cur_left = int(np.argmax(hist[:midpoint])) if midpoint > 0 else 0
+            cur_right = int(np.argmax(hist[midpoint:]) + midpoint) if w > midpoint else midpoint
+            leftx = int(self._last_leftx * 0.5 + cur_left * 0.5)
+            rightx = int(self._last_rightx * 0.5 + cur_right * 0.5)
 
         nz = cv2.findNonZero(edges)
         centerline: List[Tuple[float, float]] = []
         if nz is None or len(nz) == 0:
+            self._last_conf = 0.0   # 에지 없음 → lost. 다음 프레임 히스토그램 재획득.
             return centerline, 0.0
         # findNonZero는 OpenCV 버전에 따라 (N,1,2) 또는 (N,2) → 항상 (N,2)로.
         pts = np.asarray(nz).reshape(-1, 2)
@@ -329,6 +342,7 @@ class LaneDetector:
             self._last_rightx = rightx
         if lane_w > 1.0:
             self._lane_width_px = lane_w   # 다음 프레임으로 학습 폭 이월.
+        self._last_conf = confidence       # 다음 프레임 seed lock/lost 판정에 사용.
         return centerline, confidence
 
     def _smooth_path(self, path_m: List[Tuple[float, float]]) -> List[Tuple[float, float]]:

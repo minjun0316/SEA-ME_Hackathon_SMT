@@ -5,7 +5,7 @@
 스택: camera_node → lane_detect_node → controller_node(source=topic) → control_node(키트 서보/모터).
 이제 **키트 액추에이터 노드까지 이 런치가 포함**한다(T1 따로 띄울 필요 없음).
 텔레메트리로 battery_node(전압 감시)·monitor_node(웹 UI)도 기본 포함(각각 use_battery/use_monitor 로 끔).
-YOLO 객체인식은 use_yolo(기본 True)로 함께 띄운다(관측·디버그용, 주행엔 무관).
+YOLO 객체인식은 기본 off(느려서 실시간성 저하). 필요 시 use_yolo:=True 로 띄운다(관측·디버그용, 주행엔 무관).
 아루코 인지(mission_cues_node)는 use_mission_cues(기본 True)로 띄운다(발행만).
 미션 시퀀서(mission_node)는 **제외** — 차선 추종 + 아루코 정지만 검증한다.
 판단(decision_node)은 기본 off. **아루코 보이면 정지시키려면 use_decision:=True** 로 켠다
@@ -53,8 +53,8 @@ def generate_launch_description():
                               description='battery_node(전압 감시). 저전압 컷오프 대비 기본 on'),
         DeclareLaunchArgument('use_monitor', default_value='True',
                               description='monitor_node(웹 UI: 카메라/디버그/조향 시각화)'),
-        DeclareLaunchArgument('use_yolo', default_value='True',
-                              description='yolo_detect_test_node(객체인식 디버그). 웹 YOLO 패널용, 끄려면 False'),
+        DeclareLaunchArgument('use_yolo', default_value='False',
+                              description='yolo_detect_test_node(객체인식 디버그). 느려서 기본 off, 웹 YOLO 패널 보려면 use_yolo:=True'),
         DeclareLaunchArgument('use_mission_cues', default_value='True',
                               description='mission_cues_node(아루코 ID3 검출→정지신호). 정지엔 use_decision:=True 필요'),
         DeclareLaunchArgument('lane_config', default_value=lane_cfg,

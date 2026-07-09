@@ -74,16 +74,4 @@ def generate_launch_description():
             name='battery_node',
             output='screen',
         ),
-        Node(
-            package='inference',
-            executable='inference_node',
-            name='inference_node',
-            output='screen',
-            parameters=[
-                {
-                    'model_path': model_path,
-                    'vehicle_config_file': vehicle_config_path,
-                },
-            ],
-        ),
     ])

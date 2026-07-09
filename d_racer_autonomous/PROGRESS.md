@@ -21,7 +21,7 @@ racer-run enable_drive:=True drive_throttle:=0.16 throttle_limit:=0.20
 ```
 - ✅ **커브 완주 + 안정** → 폐루프 인지·제어 완성. 다음은 `use_decision:=True`로 마커정지 합쳐 미션 시작.
 - ⚠️ **과하게 꺾임(오버슈트)** → 복원 차선폭(`lane.yaml lane_width_px`) 학습값이 큼 or 피팅 과함 → `path_smooth_order` 또는 gain 낮춤.
-- ⚠️ **여전히 덜 꺾임/못 완주** → (a) 조향 포화 의심(`max_steer_deg=10°`→최소회전반경~1m, 트랙 커브가 더 급하면 물리한계) 실측 필요, (b) 우측커브면 트림 비대칭(-0.776 조기포화) 확인. `/control` steering 값 캡처해 포화 여부부터 볼 것.
+- ⚠️ **여전히 덜 꺾임/못 완주** → (a) 조향 포화 의심(`max_steer_deg=15.5°`(07-09 원주행 역산 확정)→R_min≈0.63m, 트랙 커브가 더 급하면 물리한계), (b) 우측커브면 트림 비대칭(-0.776 조기포화) 확인. `/control` steering 값 캡처해 포화 여부부터 볼 것.
 - 🌀 **직선 휘청** → `ld_min` ↑(0.3→0.4) 또는 `steering_smoothing` ↓.
 
 ### ✅ 완료(07-08): 차선추종 커브 대응 대수술 (인지) + 제어 튜닝
@@ -283,7 +283,7 @@ pkill -f calibration_node                         # 정지
 ## ⏳ 다음 할 일
 
 ### 1. 캘리브레이션 마무리 (거치대, 바퀴 띄운 상태)
-- [~] **최대 조향각**: 손측정 ≈ **10도** → `config/vehicle.yaml: max_steer_deg=10.0` (잠정, 실주행 원그리기 δ=atan(L/R)로 재확인)
+- [x] **최대 조향각 (07-09 확정, 원주행 역산으로 치환)**: 풀락 원 실측 → δ=atan(L/R), R=지름/2, L=0.175. 좌 D=1.32m→**14.85°**, 우 D=1.20m→**16.26°**(트림 비대칭), 평균 **15.5°** → `config/vehicle.yaml: max_steer_deg=15.5`. 손측정 10°(2배 과조향)·시뮬잠정 20°(0.78배 언더스티어) 모두 폐기. R_min≈0.63m. 시뮬 재검증: circle CTE 0.13cm·완주, sharp_s(δ_req14.4°) 완주. (뒷차축 중심 궤적 가정 — 바깥 바퀴자국으로 쟀으면 트레드폭 보정해 소폭↑ 가능.)
 - [ ] **throttle 데드존 측정**: `throttle 0.08`부터 0.02씩 올려 뒷바퀴 막 도는 값 찾기 (⚠️ 바퀴 띄운 상태 필수)
 - [x] **직진 트림 (07-02 확정)**: 실주행 직진 서보명령 = **0.2238**. 가법 가정 폐기(control_node는 /control 명령을 트림 없이 그대로 서보 전달, control_node.py:121). → 키트 `src/config/vehicle_config.yaml: STEER_TRIM=0.2238` (commit 93c31a0, push 완료), 우리 `config/vehicle.yaml: steer_trim=0.2238` 기록됨. controller가 출력에 0.2238을 직접 더한다.
 - [x] **휠베이스** 자로 측정 → `config/vehicle.yaml: wheelbase` = **0.175** (2026-07-01, 좌우 1mm차 무시)
@@ -296,7 +296,7 @@ pkill -f calibration_node                         # 정지
 - [x] 안전: `enable_drive`(기본 False)→throttle=0, True라도 `throttle_limit`(0.15) 하드클램프. Speed는 계산·로깅만(속도→throttle 매핑은 Stage 4).
 - [x] 빌드/실행 확인: `colcon build --packages-select racer_bringup` OK, `ros2 run racer_bringup controller_node`로 /control 발행·로깅 확인(하드웨어 미접촉 토픽).
 - [ ] **실차 확인 남음**: 거치대에서 `control_node(use_joystick_control:=False)` + `controller.launch.py path:=circle`로 앞바퀴가 곡률 방향으로 꺾이는지 눈으로 검증. 이후 저속 `enable_drive:=True drive_throttle:=0.12`.
-- [ ] (알아둘 점) max_steer_deg=10 + trim 0.2238이라 정규화 조향 실효범위 비대칭([-0.776, +1.0], 우측 조기 포화). 물리적 사실 — 필요시 트림/최대각 재측정.
+- [ ] (알아둘 점) max_steer_deg=15.5 + trim 0.2238이라 정규화 조향 실효범위 비대칭([-0.776, +1.0], 우측 조기 포화). 물리적 사실 — 필요시 트림/최대각 재측정. 실측 풀락도 좌14.85°/우16.26°로 비대칭 확인됨.
 
   사용법:
   ```bash

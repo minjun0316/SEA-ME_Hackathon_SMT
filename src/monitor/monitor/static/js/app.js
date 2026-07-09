@@ -39,6 +39,7 @@ const elements = {
   imageChip: document.getElementById('image-chip'),
   imageUpdated: document.getElementById('image-updated'),
   imageResolution: document.getElementById('image-resolution'),
+  cameraFrame: document.getElementById('camera-frame'),
   recordBadge: document.getElementById('record-badge'),
   recordBadgeLabel: document.getElementById('record-badge-label'),
   controlCard: document.getElementById('control-card'),
@@ -519,6 +520,11 @@ function refreshImageByEndpoint(targetElement, endpoint) {
   image.src = `${endpoint}?t=${Date.now()}`;
 }
 
+function refreshCameraFrame() {
+  const endpoint = config.frameEndpoint || '/api/frame';
+  refreshImageByEndpoint(elements.cameraFrame, endpoint);
+}
+
 function refreshDebugFrames() {
   if (!config.debugImageEnabled || debugImageRequestInFlight) {
     return;
@@ -540,11 +546,13 @@ function refreshDebugFrames() {
 function startPolling() {
   fetchStatus();
   fetchGraph();
+  refreshCameraFrame();
   if (config.debugImageEnabled) {
     refreshDebugFrames();
   }
   window.setInterval(fetchStatus, config.refreshIntervalMs);
   window.setInterval(fetchGraph, config.refreshIntervalMs);
+  window.setInterval(refreshCameraFrame, config.imageRefreshIntervalMs);
   if (config.debugImageEnabled) {
     window.setInterval(refreshDebugFrames, config.imageRefreshIntervalMs);
   }

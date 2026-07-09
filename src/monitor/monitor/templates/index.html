@@ -50,6 +50,10 @@
             </div>
           </dl>
 
+          <div class="image-stage">
+            <img id="camera-frame" class="image-stage__frame" src="{{ placeholder_url }}" alt="Camera live frame">
+          </div>
+
           {% if debug_image and debug_channels %}
           <div class="debug-grid" id="debug-grid">
             {% for ch in debug_channels %}
@@ -194,6 +198,7 @@
       window.MONITOR_CONFIG = {
         statusEndpoint: {{ url_for('api_status')|tojson }},
         graphEndpoint: {{ url_for('api_graph')|tojson }},
+        frameEndpoint: {{ url_for('api_frame')|tojson }},
         debugImageEnabled: {{ debug_image|tojson }},
         debugChannels: [
           {% for ch in debug_channels %}
