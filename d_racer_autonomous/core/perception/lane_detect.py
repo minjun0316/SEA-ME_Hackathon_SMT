@@ -32,6 +32,9 @@ class LaneCalib:
     # --- BEV 원근변환 src(이미지 크기 대비 비율). dst는 전체 사각형 ---
     bev_top_y: float = 0.4      ##< 상단 라인 y 비율(작을수록 멀리까지)
     bev_top_x: float = 0.2      ##< 상단 좌/우 x 비율(좌=x, 우=1-x)
+    # 체커보드 IPM으로 실측한 BEV 호모그래피(이미지→BEV, 3x3 행렬을 행우선 9값).
+    # 지정되면 4점(bev_top_*) 대신 이 행렬을 그대로 쓴다. None이면 기존 4점 폴백.
+    bev_matrix: Optional[Tuple[float, ...]] = None
 
     # --- HLS 색 임계 (H, L, S) ---
     yellow_lo: Tuple[int, int, int] = (15, 80, 70)
@@ -47,6 +50,10 @@ class LaneCalib:
     # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
     # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
     lane_width_px: float = 180.0
+    # 곡선에서 안쪽 차선이 프레임 밖으로 나가면 좌/우 두 탐색창이 남은 바깥선 하나에
+    # 모두 달라붙는다. 두 피팅선 간격이 이 비율×lane_w보다 좁으면 '같은 선을 중복
+    # 검출'로 보고 단일 차선으로 강등한다(→ 곡선방향 기반 안쪽 복원).
+    lane_collapse_frac: float = 0.5
     # 중심선 노이즈 완화: 경로점을 다항식(y~x)으로 피팅해 매끄럽게. 슬라이딩윈도우
     # 창별 흔들림이 조향 휘청임으로 이어지는 걸 방지(직선·커브 공통). order 2면 곡선까지.
     path_smooth: bool = True
@@ -178,14 +185,18 @@ class LaneDetector:
         h, w = frame.shape[:2]
         if self._M is None or self._M_size != (w, h):
             c = self.calib
-            src = np.float32([
-                [w * c.bev_top_x, h * c.bev_top_y],
-                [w * (1.0 - c.bev_top_x), h * c.bev_top_y],
-                [w, h],
-                [0, h],
-            ])
-            dst = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
-            self._M = cv2.getPerspectiveTransform(src, dst)
+            if c.bev_matrix is not None and len(c.bev_matrix) == 9:
+                # 체커보드 IPM 실측 행렬 직접 사용(이미지→BEV, 행우선 3x3).
+                self._M = np.array(c.bev_matrix, dtype=np.float32).reshape(3, 3)
+            else:
+                src = np.float32([
+                    [w * c.bev_top_x, h * c.bev_top_y],
+                    [w * (1.0 - c.bev_top_x), h * c.bev_top_y],
+                    [w, h],
+                    [0, h],
+                ])
+                dst = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+                self._M = cv2.getPerspectiveTransform(src, dst)
             self._M_size = (w, h)
             self._last_leftx = w * 0.25
             self._last_rightx = w * 0.75
@@ -299,9 +310,23 @@ class LaneDetector:
         found_any = sum(1 for i in range(c.nwindows) if lfound[i] or rfound[i])
         confidence = found_any / float(c.nwindows)
 
-        # 다음 프레임 seed: near(바닥=cys[0]) 쪽 피팅값 우선.
-        self._last_leftx = float(left_line[0]) if left_ok else leftx
-        self._last_rightx = float(right_line[0]) if right_ok else rightx
+        # 다음 프레임 seed: near(바닥=cys[0]) 쪽 피팅값 우선. 한쪽만 잡힌 경우
+        # 놓친 쪽 seed를 (잡힌 선 ± lane_w)로 앵커한다 → 곡선에서 한쪽만 보다가
+        # 반대편 차선이 돌아올 때 탐색창이 이미 예측 위치에 있어 즉시 재획득한다.
+        # (앵커 없이 leftx/rightx를 그대로 두면 놓친 쪽 seed가 히스토그램 노이즈로
+        #  표류해, 복귀 프레임에서 진짜 선을 margin 밖에 두고 몇 프레임간 못 잡음.)
+        if left_ok and right_ok:
+            self._last_leftx = float(left_line[0])
+            self._last_rightx = float(right_line[0])
+        elif left_ok:
+            self._last_leftx = float(left_line[0])
+            self._last_rightx = float(left_line[0] + lane_w)
+        elif right_ok:
+            self._last_rightx = float(right_line[0])
+            self._last_leftx = float(right_line[0] - lane_w)
+        else:
+            self._last_leftx = leftx
+            self._last_rightx = rightx
         if lane_w > 1.0:
             self._lane_width_px = lane_w   # 다음 프레임으로 학습 폭 이월.
         return centerline, confidence

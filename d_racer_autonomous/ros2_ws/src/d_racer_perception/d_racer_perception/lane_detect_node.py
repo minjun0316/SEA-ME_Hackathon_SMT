@@ -84,6 +84,19 @@ class LaneDetectNode(Node):
         self.declare_parameter('yellow_pixel_threshold', d.yellow_pixel_threshold)
         self.declare_parameter('stopline_len_threshold', d.stopline_len_threshold)
         self.declare_parameter('lane_width_px', d.lane_width_px)
+        # 체커보드 IPM 실측 BEV 행렬(이미지→BEV, 행우선 9값). 실차 노드는 IPM 전용.
+        self.declare_parameter('bev_matrix', [0.0] * 9)
+
+        _bev = list(self.get_parameter('bev_matrix').value or [])
+        _bev = tuple(float(x) for x in _bev) \
+            if len(_bev) == 9 and any(abs(float(x)) > 1e-12 for x in _bev) else None
+        # IPM 강제: bev_matrix 없으면 4점 폴백으로 조용히 넘어가지 않고 즉시 실패.
+        # (모니터에서 IPM↔4점이 실행마다 바뀌던 원인 = 임시 params에만 행렬이 있고
+        #  정식 lane.yaml엔 없어서였음. 이제 lane.yaml에 행렬이 없으면 노드가 뜨지 않는다.)
+        if _bev is None:
+            raise RuntimeError(
+                'bev_matrix(IPM 호모그래피 9값)가 설정되지 않았습니다. '
+                'config/lane.yaml의 bev_matrix를 채우세요. 실차 노드는 IPM 전용입니다(4점 폴백 비활성).')
 
         calib = LaneCalib(
             m_per_px_forward=float(self.get_parameter('m_per_px_forward').value),
@@ -91,6 +104,7 @@ class LaneDetectNode(Node):
             x_near_m=float(self.get_parameter('x_near_m').value),
             bev_top_y=float(self.get_parameter('bev_top_y').value),
             bev_top_x=float(self.get_parameter('bev_top_x').value),
+            bev_matrix=_bev,
             yellow_pixel_threshold=int(self.get_parameter('yellow_pixel_threshold').value),
             stopline_len_threshold=float(self.get_parameter('stopline_len_threshold').value),
             lane_width_px=float(self.get_parameter('lane_width_px').value),

@@ -9,14 +9,21 @@ lane_detect_node:
     publish_debug: true
     debug_jpeg_quality: 80
 
-    # --- 픽셀→미터(BEV 기준). 잠정값, 트랙 튜닝 필수 ---
-    m_per_px_forward: 0.005    # BEV 세로 1px 당 전방[m] — 아직 잠정(forward 캘리브 미실시)
-    m_per_px_lateral: 0.00119  # BEV 가로 1px 당 횡[m] — 실측 캘리브(07-08): 주황선 0.25m ÷ near행 210px
+    # --- BEV: 체커보드 IPM 실측 호모그래피(이미지→BEV, 행우선 9값) ---
+    # 07-09 채택: 실차 노드는 IPM 전용. 이 값이 없으면 노드가 에러로 죽는다(4점 폴백 비활성).
+    # 이미지 320x160 → BEV 320x160, S=24px/40mm.
+    bev_matrix: [-5.64447455, -6.14425873, 1075.55439538,
+                 -0.30965229, -15.90853766, 1730.12114279,
+                 -0.00051756, -0.03682609, 1.0]
+
+    # --- 픽셀→미터(BEV 기준). IPM 등방 스케일: 40mm/24px = 0.001667 (전방=횡) ---
+    m_per_px_forward: 0.001667  # IPM 격자와 정합. (이전 4점 캘리브값 0.00157는 IPM 격자와 스케일 달라 폐기)
+    m_per_px_lateral: 0.001667  # IPM 등방 → forward와 동일. (이전 4점값 0.00119 폐기)
     x_near_m: 0.15            # 뒷차축→BEV 최하단행 전방거리[m]
 
-    # --- BEV 원근 src 비율 ---
-    bev_top_y: 0.4
-    bev_top_x: 0.2
+    # --- 4점 BEV src 비율 (IPM 미사용 시 폴백용. 실차 노드에선 무시됨. 시뮬/테스트만 참조) ---
+    bev_top_y: 0.55
+    bev_top_x: 0.22
 
     # --- 색/정지선 임계 ---
     yellow_pixel_threshold: 30
