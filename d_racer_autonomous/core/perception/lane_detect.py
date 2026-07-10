@@ -39,8 +39,19 @@ class LaneCalib:
     # --- HLS 색 임계 (H, L, S) ---
     yellow_lo: Tuple[int, int, int] = (15, 80, 70)
     yellow_hi: Tuple[int, int, int] = (35, 255, 255)
-    white_lo: Tuple[int, int, int] = (0, 200, 0)
-    white_hi: Tuple[int, int, int] = (180, 255, 70)
+    white_lo: Tuple[int, int, int] = (0, 200, 0)   ##< white_adaptive=False 폴백 하한
+    white_hi: Tuple[int, int, int] = (180, 255, 70)  ##< 〃 상한
+    # 흰색 마스크: 적응형 밝기 임계(조명 불변). 흰 선은 항상 프레임 내 최고 밝기이므로
+    # L 하한을 프레임 밝기(상위 퍼센타일)에 상대적으로 잡는다. 고정 임계(white_lo/hi)는
+    # 밝으면 회색 바닥을 흰색으로 오검(실측 회색타일 L=218 > 하한 200)하고, 어두우면
+    # 흰 선을 통째 놓쳐(저조도 흰선 L≈152 < 200) 깜빡였다. 실측 BEV서 조금만 어두워도
+    # 고정은 0px, 적응은 ~2060px로 안정. → 두 증상(회색오검·깜빡임)을 동시 해결.
+    white_adaptive: bool = True         ##< True=적응형, False=고정(white_lo/hi)
+    white_adaptive_k: float = 0.80      ##< L 하한 = k × (L 상위 white_pct 퍼센타일)
+    white_pct: float = 99.0             ##< 밝기 기준 퍼센타일(흰 선=최고밝기 추종)
+    white_l_floor: int = 90             ##< L 하한 최소(칠흑 프레임서 노이즈 폭주 방지)
+    white_l_cap: int = 250              ##< L 하한 최대(과도한 상승 방지)
+    white_s_hi: int = 65                ##< 흰색 최대 채도 S(무채색만 통과, 유채색 배제)
     yellow_pixel_threshold: int = 30   ##< 노랑 픽셀 이 이상이면 노랑 우세(노랑만 추종)
 
     # --- 슬라이딩 윈도우 ---
@@ -51,7 +62,11 @@ class LaneCalib:
     # 보고 직전 피팅 near-x를 그대로 시드로 쓴다(search-around-poly) → 곡선 연속추종.
     # 미만이면 'lost'로 보고 하단 히스토그램으로 재획득. midpoint 고정분할 히스토그램은
     # 곡선에서 양 차선이 한쪽으로 쏠릴 때 좌우를 뒤바꾸므로 lost일 때만 최소로 쓴다.
-    seed_lock_conf: float = 0.25
+    seed_lock_conf: float = 0.40
+    # lost 재획득 시 하단 히스토그램 peak을 '실제 차선'으로 인정할 최소 에지 비율.
+    # peak 열의 에지량이 (스캔행수×255×이 값) 미만이면 그쪽 차선이 안 보이는 것으로
+    # 보고 base를 화면 25%/75% 기본위치로 고정한다(argmax가 0/노이즈를 잡는 것 방지).
+    seed_min_fill: float = 0.05
     # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
     # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
     lane_width_px: float = 180.0
@@ -125,7 +140,7 @@ class LaneDetector:
         hls = cv2.cvtColor(bev, cv2.COLOR_BGR2HLS)
 
         yellow = cv2.inRange(hls, np.array(c.yellow_lo), np.array(c.yellow_hi))
-        white = cv2.inRange(hls, np.array(c.white_lo), np.array(c.white_hi))
+        white = self._white_mask(hls)
         yellow_px = int(cv2.countNonZero(yellow))
         white_px = int(cv2.countNonZero(white))
 
@@ -173,10 +188,17 @@ class LaneDetector:
             res.stop_line_dist = -1.0
 
         if debug is not None:
-            cv2.line(debug, (midpoint, 0), (midpoint, h), (255, 255, 0), 1)
+            cv2.line(debug, (midpoint, 0), (midpoint, h), (255, 255, 0), 1)  # 중앙 기준선
+            # lane_path(발행되는 중심선) 시각화: 미터 경로를 BEV 픽셀로 역변환해 초록
+            # 폴리라인+점으로 그린다. near(바닥)은 주황 원으로 강조. 모니터 "Lane" 판에
+            # 그대로 나온다(디버그 전용, 제어 동작에는 영향 없음).
             if res.lane_path:
-                cx0 = int(centerline_px[0][0])
-                cv2.circle(debug, (cx0, h - 40), 5, (0, 255, 0), -1)
+                pts = [self._m_to_px(x, y, h, midpoint) for (x, y) in res.lane_path]
+                for a, b in zip(pts[:-1], pts[1:]):
+                    cv2.line(debug, a, b, (0, 255, 0), 2)
+                for p in pts:
+                    cv2.circle(debug, p, 3, (0, 255, 0), -1)
+                cv2.circle(debug, pts[0], 5, (0, 128, 255), -1)  # near(최근접점) 강조
         res.debug_image = debug
 
         # 중간 단계 노출(모니터 디버그 화면용). BEV=원근변환, edges=Canny 결과.
@@ -184,6 +206,28 @@ class LaneDetector:
             res.debug_stages = {'bev': bev, 'edges': edges}
 
         return res
+
+    # ------------------------------------------------------------------ #
+    def _white_mask(self, hls: np.ndarray) -> np.ndarray:
+        """@brief 흰색 마스크. 적응형이면 프레임 밝기에 상대적인 L 하한을 쓴다.
+
+        @param hls BEV 이미지의 HLS 변환(H,L,S).
+        @return uint8 마스크(흰=255).
+
+        @details 흰 차선은 항상 프레임 내 최고 밝기다. L 하한을 'L 상위 퍼센타일 ×
+        비율'로 잡으면 조명이 밝든 어둡든 흰 선만 안정적으로 남아 깜빡임이 사라지고,
+        상대적으로 어두운 회색 바닥·매트는 자동 배제된다(고정 임계의 밝음=회색오검 /
+        어두움=흰선실종 문제를 동시 해결). S 상한으로 노랑 등 유채색을 배제한다.
+        white_adaptive=False면 기존 고정 임계(white_lo/hi)로 폴백한다.
+        """
+        c = self.calib
+        if not c.white_adaptive:
+            return cv2.inRange(hls, np.array(c.white_lo), np.array(c.white_hi))
+        L = hls[:, :, 1]
+        S = hls[:, :, 2]
+        l_lo = int(round(c.white_adaptive_k * float(np.percentile(L, c.white_pct))))
+        l_lo = int(np.clip(l_lo, c.white_l_floor, c.white_l_cap))
+        return ((L >= l_lo) & (S <= c.white_s_hi)).astype(np.uint8) * 255
 
     # ------------------------------------------------------------------ #
     def _to_bev(self, frame: np.ndarray) -> np.ndarray:
@@ -208,6 +252,36 @@ class LaneDetector:
             self._last_rightx = w * 0.75
         return cv2.warpPerspective(frame, self._M, (w, h))
 
+    def _reacquire_base(self, hist: np.ndarray, w: int, h: int) -> Tuple[int, int]:
+        """@brief lost 상태에서 좌/우 탐색 시작 base x를 재획득한다.
+
+        @param hist 하단 영역 열별 에지 합(길이 w).
+        @param w,h  프레임 크기[px].
+        @return (leftx, rightx) 시작 base.
+
+        @details 각 반쪽 히스토그램 peak의 에지량이 충분하면(=차선이 보이면)
+        argmax를 직전값과 블렌딩해 채택한다. 임계 미만이면 그쪽 차선이 '안 보이는'
+        것으로 보고 base를 화면 25%/75% 기본위치로 고정한다 — argmax는 에지가 없어도
+        무조건 인덱스를 반환(전부 0이면 0=맨왼쪽)하므로 엉뚱한 점을 잡는 것을 막는다.
+        """
+        c = self.calib
+        midpoint = w // 2
+        n_rows = h - int(h * 0.6)                        # 히스토그램 스캔 행 수
+        min_mass = 255.0 * n_rows * c.seed_min_fill      # 실제 차선 인정 최소 에지량
+        left_hist = hist[:midpoint]
+        right_hist = hist[midpoint:]
+        if left_hist.size and float(left_hist.max()) >= min_mass:
+            cur_left = int(np.argmax(left_hist))
+            leftx = int(self._last_leftx * 0.5 + cur_left * 0.5)
+        else:
+            leftx = int(w * 0.25)                         # 좌측 차선 미검출 → 기본 25%
+        if right_hist.size and float(right_hist.max()) >= min_mass:
+            cur_right = int(np.argmax(right_hist) + midpoint)
+            rightx = int(self._last_rightx * 0.5 + cur_right * 0.5)
+        else:
+            rightx = int(w * 0.75)                        # 우측 차선 미검출 → 기본 75%
+        return leftx, rightx
+
     def _sliding_window(self, edges: np.ndarray, debug):
         """@brief 좌/우 차선 슬라이딩 윈도우. @return (centerline_px[near→far], confidence)."""
         c = self.calib
@@ -222,10 +296,7 @@ class LaneDetector:
             rightx = int(self._last_rightx)
         else:
             hist = np.sum(edges[int(h * 0.6):, :], axis=0)
-            cur_left = int(np.argmax(hist[:midpoint])) if midpoint > 0 else 0
-            cur_right = int(np.argmax(hist[midpoint:]) + midpoint) if w > midpoint else midpoint
-            leftx = int(self._last_leftx * 0.5 + cur_left * 0.5)
-            rightx = int(self._last_rightx * 0.5 + cur_right * 0.5)
+            leftx, rightx = self._reacquire_base(hist, w, h)
 
         nz = cv2.findNonZero(edges)
         centerline: List[Tuple[float, float]] = []
@@ -304,6 +375,21 @@ class LaneDetector:
             if wobs > 0.3 * lane_w:
                 lane_w = lane_w * 0.7 + wobs * 0.3
 
+        # --- 붕괴(collapse) 방지 ---
+        # 노이즈/한쪽 선 끊김으로 좌·우 두 탐색창이 같은 실선 하나에 달라붙으면
+        # (두 피팅선 간격 < lane_collapse_frac × lane_w) 중심선이 반차선 튀고, seed도
+        # 같은 선에 얹혀 lock인 채 못 빠져나온다(→ 원래 차선 상실·이탈). 이때 단일
+        # 차선으로 강등: 붕괴 위치가 직전 좌/우 seed 중 어디에 더 가깝냐로 어느 실선인지
+        # 판정하고 반대편을 lane_w로 복원한다 → 중심선 정상화 + 다음 seed 분리(복귀).
+        if left_ok and right_ok and \
+                float(np.mean(right_line - left_line)) < c.lane_collapse_frac * lane_w:
+            merged = (left_line + right_line) / 2.0            # 붙어버린 실선(창별)
+            if abs(float(merged[0]) - self._last_leftx) <= \
+                    abs(float(merged[0]) - self._last_rightx):
+                left_line, right_line = merged, merged + lane_w    # 왼쪽 선에 붙음
+            else:
+                left_line, right_line = merged - lane_w, merged    # 오른쪽 선에 붙음
+
         # --- 3단계: 모드별 중심선(피팅선 사용 → 곡선 연장) ---
         centerline = []
         prev_cx = None
@@ -372,6 +458,13 @@ class LaneDetector:
         x = c.x_near_m + (h - row) * c.m_per_px_forward
         y = (midpoint - col) * c.m_per_px_lateral
         return (x, y)
+
+    def _m_to_px(self, x: float, y: float, h: int, midpoint: int) -> Tuple[int, int]:
+        """@brief base_link 미터(x,y) → BEV 픽셀(col,row). `_px_to_m`의 역변환(디버그 그리기용)."""
+        c = self.calib
+        col = midpoint - y / c.m_per_px_lateral if c.m_per_px_lateral else midpoint
+        row = h - (x - c.x_near_m) / c.m_per_px_forward if c.m_per_px_forward else h
+        return (int(round(col)), int(round(row)))
 
     def _stopline(self, bev: np.ndarray, debug):
         """@brief 정지선 검출 + 최근접 정지선의 BEV 행(row). @return (detected, row|-1)."""

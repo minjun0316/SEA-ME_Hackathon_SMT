@@ -25,7 +25,7 @@ def generate_launch_description():
         DeclareLaunchArgument('mission_cues_topic', default_value='/perception/mission_cues'),
         DeclareLaunchArgument('drive_command_topic', default_value='/decision/drive_command'),
         DeclareLaunchArgument('lane_mode_topic', default_value='/decision/lane_mode'),
-        DeclareLaunchArgument('rate_hz', default_value='10.0'),
+        DeclareLaunchArgument('rate_hz', default_value='30.0'),  # 07-10 10→30: 조향루프 지연 감소(smoothing τ=dt/β를 1/3로, 노이즈필터 유지). 중앙추종 안정창 확대. 인지 카메라~26fps라 30Hz 수용.
         DeclareLaunchArgument('lane_timeout', default_value='0.3'),
     ]
     node = Node(

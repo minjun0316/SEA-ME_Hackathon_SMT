@@ -5,12 +5,15 @@
 타입 있는 Config 객체로 파라미터를 받는다.
 """
 from .battery_compensator import BatteryCompensator
+from .lateral_pd import LateralPDController, LateralPDResult
 from .pure_pursuit import PurePursuitController, PurePursuitResult
 from .speed_controller import SpeedController, SpeedResult
 
 __all__ = [
     "PurePursuitController",
     "PurePursuitResult",
+    "LateralPDController",
+    "LateralPDResult",
     "SpeedController",
     "SpeedResult",
     "BatteryCompensator",

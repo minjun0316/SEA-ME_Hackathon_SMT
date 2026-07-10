@@ -6,7 +6,7 @@ lane_detect_node:
     lane_status_topic: /perception/lane_status
     lane_path_topic: /perception/lane_path
     base_frame: base_link
-    publish_debug: true
+    publish_debug: false   # 07-10 true→false: 주행중 디버그 JPEG 3장/프레임(debug+bev+edges) 인코딩이 lane_detect rate를 갉아 lookahead 타깃 갱신 지연→과조향. 성능주행엔 off. 인지 시각화 필요할 때만 true.
     debug_jpeg_quality: 80
 
     # --- BEV: 4점 원근변환 행렬(이미지→BEV, 행우선 9값) ---
@@ -14,7 +14,10 @@ lane_detect_node:
     # → 사용자 요청으로 4점 방식 복귀: src 상단(0.2/0.4)·하단 full-width 사다리꼴을 BEV 사각형 전체로 늘림(잘림 0%).
     #   bev_matrix = getPerspectiveTransform(src,dst), src=[[.2w,.4h],[.8w,.4h],[w,h],[0,h]] dst=전체. bev_top_x/y와 정합(아래).
     #   노드가 bev_matrix를 강제(폴백 비활성)라 4점 행렬을 직접 넣음. ⚠️4점은 비metric(늘림 비균일)→아래 m_per_px는 원본IPM 최적근사.
-    bev_matrix: [3.0, 2.0, -320.0, 0.0, 5.0, -320.0, 0.0, 0.0125, 1.0]
+    # 07-10: straight11 원본서 두 흰차선 선형피팅→그 사다리꼴 src를 직사각형 dst로 매핑(차선이 BEV서 수직·평행 일자).
+    #   src=[[131,55],[207,55],[275,158],[68,158]](320x160), dst 차선=x90/x230(간격140px=35cm→lateral 0.0025 보존).
+    #   실측 검증: bev_new.jpg서 두 차선이 x=90,230 수직선과 일치. bottom 코너 소량 검정(무시 가능).
+    bev_matrix: [23.551359, 33.763415, -3795.973942, 0.0, 54.104909, -2975.76999, 0.0, 0.214114, 1.0]
 
     # --- 픽셀→미터(BEV 기준). 4점 BEV의 비균일 스케일을 원본IPM 미터로 최적근사(선형회귀) ---
     m_per_px_forward: 0.005721  # 4점: 상단 늘림으로 전방 1px가 더 먼거리. 원본IPM 기준 회귀(전방 잔차 3.9cm RMS).
@@ -32,3 +35,9 @@ lane_detect_node:
     # --- 커브: 한쪽 차선 소실 시 복원용 차선폭[BEV px] ---
     # 두 선 다 보이는 프레임에서 자동 학습. 아래는 학습 전 초기값(트랙서 조정 가능).
     lane_width_px: 140.0  # 4점: 35cm ÷ 0.002506 ≈ 140px. 두 선 보이면 자동 재학습.
+
+    # --- lost 재획득 시 base fallback (07-10) ---
+    # 히스토그램 peak 열의 에지량이 (스캔행수×255×seed_min_fill) 미만이면 그쪽 차선을
+    # '미검출'로 보고 base를 화면 25%/75%에 고정(argmax가 0/노이즈를 base로 잡는 것 방지).
+    # ↑ 노이즈를 차선으로 오인하면(엉뚱한 점 지속) 올리고, 흐린 차선을 자꾸 놓치면 내려.
+    seed_min_fill: 0.05

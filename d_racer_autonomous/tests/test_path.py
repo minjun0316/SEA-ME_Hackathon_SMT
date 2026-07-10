@@ -28,6 +28,30 @@ def test_lookahead_advances_by_arc_length():
     assert math.isclose(target[0], p.points[0, 0] + 1.0, abs_tol=0.06)
 
 
+def _straight_then_arc(radius=0.5):
+    """앞 2m 직선 + 뒤 90° 원호(R) 경로. 진입 전 preview 검증용."""
+    xs = np.linspace(0.0, 2.0, 60)
+    straight = np.column_stack([xs, np.zeros_like(xs)])
+    th = np.linspace(0.0, math.pi / 2, 60)
+    arc = np.column_stack([2.0 + radius * np.sin(th), radius - radius * np.cos(th)])
+    return Path(np.vstack([straight, arc]))
+
+
+def test_max_abs_curvature_ahead_sees_curve_before_arrival():
+    p = _straight_then_arc(radius=0.5)  # 원호 κ≈2.0
+    near0 = p.max_abs_curvature_ahead(0, 0.3)   # 직선 안만 봄 → 거의 0
+    ahead = p.max_abs_curvature_ahead(0, 5.0)   # 전방 전체 → 원호 곡률 감지
+    assert near0 < 0.5
+    assert ahead > 1.0
+    assert ahead >= abs(p.curvature_at(0))
+
+
+def test_max_abs_curvature_ahead_zero_distance_is_pointwise():
+    p = path_factory.circle(radius=2.0, n=800)
+    assert math.isclose(
+        p.max_abs_curvature_ahead(100, 0.0), abs(p.curvature_at(100)), rel_tol=1e-9)
+
+
 def test_lookahead_clamps_at_path_end():
     p = path_factory.straight(length=2.0)
     target = p.lookahead_point(0, 999.0)

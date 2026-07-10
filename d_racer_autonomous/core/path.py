@@ -99,6 +99,26 @@ class Path:
         index = int(np.clip(index, 0, len(self) - 1))
         return float(self._curvature[index])
 
+    def max_abs_curvature_ahead(self, from_index: int, distance: float) -> float:
+        """@brief from_index부터 전방 호길이 distance[m]까지 구간의 max |κ| [1/m].
+
+        @param from_index 시작 인덱스(보통 nearest_index 결과).
+        @param distance   전방 preview 거리 [m]. <=0 이면 그 점의 |κ|만 반환.
+        @return 구간 내 최대 절대곡률.
+
+        @details 곡선이 '앞에' 있으면(아직 도달 전) 그 큰 곡률을 미리 돌려준다.
+        컨트롤러가 이를 써서 곡선 진입 전에 lookahead를 줄이면(예측 수축),
+        긴 Ld의 과한 예측 조향(턴인이 너무 이름)을 완화하면서도 직선에선
+        긴 Ld(안정)를 유지할 수 있다 — 진입 타이밍과 직선 Ld를 분리한다.
+        """
+        i0 = int(np.clip(from_index, 0, len(self) - 1))
+        if distance <= 0.0:
+            return abs(float(self._curvature[i0]))
+        target_s = self._cum_dist[i0] + distance
+        i1 = int(np.searchsorted(self._cum_dist, target_s))
+        i1 = int(np.clip(i1, i0 + 1, len(self)))
+        return float(np.max(np.abs(self._curvature[i0:i1])))
+
     def heading_at(self, index: int) -> float:
         """@brief 인덱스 위치에서의 경로 접선 방향(heading) [rad]."""
         i = int(np.clip(index, 0, len(self) - 2))

@@ -81,25 +81,61 @@ class PurePursuitController:
         self.cfg = config
         self._prev_steer_norm = 0.0  ##< smoothing을 위한 직전 정규화 조향.
         self._progress_index = 0     ##< 단조 전진 진행 인덱스(윈도우 탐색 기준).
+        self._kappa_ema = 0.0        ##< 곡률 스케줄 gain용 |κ| 저역통과 상태.
 
     def reset(self) -> None:
         """@brief 내부 상태(smoothing 이력, 진행 인덱스)를 초기화한다."""
         self._prev_steer_norm = 0.0
         self._progress_index = 0
+        self._kappa_ema = 0.0
 
     # ------------------------------------------------------------------ #
-    def compute_lookahead(self, speed: float, curvature: float) -> float:
+    def _smooth_kappa(self, curvature: float) -> float:
+        """@brief |κ|를 EMA 저역통과 후 데드밴드 → 유효 곡률 κ_eff(≥0) 반환.
+
+        @param curvature 최근접 점 생(raw) 곡률 κ.
+        @return κ_eff = max(0, EMA(|κ|) − deadband).
+
+        @details lookahead·gain **공용** 유효 곡률. 스텝당 1회만 EMA를 갱신한다.
+        데드밴드가 직선 지터(작은 |κ| 노이즈)를 0으로 눌러, 곡률을 소비하는
+        어떤 스케줄도 '직선을 가짜 곡률로 읽어 발산'(07-09 adaptive 실패)하지
+        않게 한다. 이 격리가 adaptive lookahead 재활성의 핵심.
+        """
+        alpha = self.cfg.curvature_smoothing
+        self._kappa_ema = (1.0 - alpha) * self._kappa_ema + alpha * abs(curvature)
+        return max(0.0, self._kappa_ema - self.cfg.curvature_deadband)
+
+    def compute_gain(self, kappa_eff: float) -> float:
+        """@brief 이번 스텝의 조향 gain을 계산한다(곡률 스케줄).
+
+        @param kappa_eff `_smooth_kappa`가 낸 유효 곡률(≥0, 저역통과·데드밴드됨).
+        @return 적용할 steering gain.
+
+        @details use_curvature_gain=False면 상수 steering_gain을 반환한다.
+        True면 gain = clip(steering_gain + kappa·κ_eff, steering_gain, max).
+        직선(κ_eff≈0)은 baseline, 커브(κ_eff↑)는 gain을 가산해 조향력을 키운다.
+        """
+        if not self.cfg.use_curvature_gain:
+            return self.cfg.steering_gain
+        gain = self.cfg.steering_gain + self.cfg.steering_gain_kappa * kappa_eff
+        return float(np.clip(gain, self.cfg.steering_gain, self.cfg.steering_gain_max))
+
+    # ------------------------------------------------------------------ #
+    def compute_lookahead(self, speed: float, kappa_eff: float) -> float:
         """@brief 이번 스텝의 lookahead 거리를 계산한다.
 
         @param speed     현재(또는 목표) 속도.
-        @param curvature 최근접 점의 곡률 |κ|.
+        @param kappa_eff `_smooth_kappa`가 낸 유효 곡률(≥0, 저역통과·데드밴드됨).
         @return lookahead 거리 [m].
 
-        @details use_adaptive_lookahead=False면 고정값을 반환한다(초기 테스트).
+        @details use_adaptive_lookahead=False면 고정값을 반환한다.
+        Adaptive: Ld = ld_min + kv·speed − kc·κ_eff, [ld_min, ld_max]로 clip.
+        속도항이 주 레버 — 직선(빠름)은 길게(안정), 커브(속도컨트롤러가 감속)는
+        짧게(민첩). κ_eff는 데드밴드된 값이라 직선 노이즈로 Ld가 쪼그라들지 않는다.
         """
         if not self.cfg.use_adaptive_lookahead:
             return self.cfg.fixed_lookahead
-        ld = self.cfg.ld_min + self.cfg.kv * speed - self.cfg.kc * abs(curvature)
+        ld = self.cfg.ld_min + self.cfg.kv * speed - self.cfg.kc * kappa_eff
         return float(np.clip(ld, self.cfg.ld_min, self.cfg.ld_max))
 
     def compute(self, pose: Pose2D, path: Path, speed: float) -> PurePursuitResult:
@@ -117,10 +153,15 @@ class PurePursuitController:
         nearest = path.nearest_index(
             pose.x, pose.y, start=self._progress_index, window=window)
         self._progress_index = max(self._progress_index, nearest)
-        curvature = path.curvature_at(nearest)
+        curvature = path.curvature_at(nearest)  # nearest 물리 곡률(로깅/속도용).
+        # adaptive/gain용 곡률 소스: preview>0이면 전방 구간 max|κ|(곡선을 미리 봄
+        # → 진입 전 Ld 수축 → 턴인 지연). 0이면 nearest. 그 뒤 저역통과+데드밴드.
+        kappa_src = (path.max_abs_curvature_ahead(nearest, self.cfg.curvature_preview)
+                     if self.cfg.curvature_preview > 0.0 else curvature)
+        kappa_eff = self._smooth_kappa(kappa_src)
 
         # (2) lookahead point
-        lookahead = self.compute_lookahead(speed, curvature)
+        lookahead = self.compute_lookahead(speed, kappa_eff)
         target = path.lookahead_point(nearest, lookahead)
 
         # (3) alpha: 목표점을 차량 로컬 프레임으로 옮긴 뒤 방위각
@@ -131,7 +172,7 @@ class PurePursuitController:
         #     경로 끝(목표점이 lookahead보다 가까운 경우)에서도 안정적.
         ld_eff = max(1e-3, math.hypot(local[0], local[1]))
         delta = math.atan2(2.0 * self.vehicle.wheelbase * math.sin(alpha), ld_eff)
-        delta *= self.cfg.steering_gain
+        delta *= self.compute_gain(kappa_eff)
 
         # 포화 (물리 조향 한계)
         max_rad = self.vehicle.max_steer_rad

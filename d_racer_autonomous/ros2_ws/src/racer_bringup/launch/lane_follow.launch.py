@@ -62,13 +62,31 @@ def generate_launch_description():
         DeclareLaunchArgument('mission_cues_config', default_value=cues_cfg,
                               description='mission_cues_node 파라미터 YAML(ArUco 사전/ID)'),
         DeclareLaunchArgument('control_topic', default_value='/control'),
-        DeclareLaunchArgument('rate_hz', default_value='10.0'),
+        DeclareLaunchArgument('lateral_controller', default_value='lateral_pd',
+                              description='횡제어 법칙: lateral_pd(근거리 offset+heading PD, 기본) | pure_pursuit(경로 룩어헤드). 07-10 실차 A/B서 PD가 직선 꿀렁 확연히 적어 기본 채택.'),
+        DeclareLaunchArgument('rate_hz', default_value='30.0'),  # 07-10 10→30: 조향루프 지연↓(smoothing τ 0.45→0.13s). lane_follow가 실주행 스택이라 여기 값이 실제 적용됨(controller/mission.launch와 별개). 인지 카메라~26fps 수용.
         DeclareLaunchArgument('enable_drive', default_value='False',
                               description='True 라야 스로틀 발행(기본 조향만)'),
         DeclareLaunchArgument('drive_throttle', default_value='0.0'),
         DeclareLaunchArgument('throttle_limit', default_value='0.15'),
         DeclareLaunchArgument('lane_timeout', default_value='0.3',
                               description='lane_path/판단 끊김 판정[s] → 정지'),
+        # lateral_pd 게인 즉석 오버라이드(비우면 controller.yaml 값 사용). 튜닝 편의용.
+        # 예: racer-run pd_k_heading:=0.4 pd_k_cross:=1.0
+        DeclareLaunchArgument('pd_k_cross', default_value='',
+                              description='lateral_pd k_cross 오버라이드(offset[m]→조향, 중심복귀 P)'),
+        DeclareLaunchArgument('pd_k_heading', default_value='',
+                              description='lateral_pd k_heading 오버라이드(heading[rad]→조향, 커브 주레버)'),
+        DeclareLaunchArgument('pd_k_deriv', default_value='',
+                              description='lateral_pd k_deriv 오버라이드(offset 미분 댐핑)'),
+        DeclareLaunchArgument('pd_deriv_smoothing', default_value='',
+                              description='lateral_pd 미분 EMA 오버라이드'),
+        DeclareLaunchArgument('pd_max_offset', default_value='',
+                              description='lateral_pd offset 클램프[m] 오버라이드'),
+        DeclareLaunchArgument('pd_steering_smoothing', default_value='',
+                              description='lateral_pd 출력 smoothing β 오버라이드'),
+        DeclareLaunchArgument('pd_steering_sign', default_value='',
+                              description='lateral_pd 조향부호 오버라이드(+1/-1)'),
     ]
 
     # 1) 카메라(키트) — 옵션
@@ -121,6 +139,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'source': 'topic',
+            'lateral_controller': LaunchConfiguration('lateral_controller'),
             'control_topic': LaunchConfiguration('control_topic'),
             'rate_hz': LaunchConfiguration('rate_hz'),
             'enable_drive': LaunchConfiguration('enable_drive'),

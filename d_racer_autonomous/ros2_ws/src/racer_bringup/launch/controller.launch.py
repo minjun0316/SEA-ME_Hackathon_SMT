@@ -28,7 +28,7 @@ def generate_launch_description():
         DeclareLaunchArgument('path', default_value='straight',
                               description='straight|circle|s_curve|sharp_s|figure_eight|rotary'),
         DeclareLaunchArgument('control_topic', default_value='/control'),
-        DeclareLaunchArgument('rate_hz', default_value='10.0'),
+        DeclareLaunchArgument('rate_hz', default_value='30.0'),  # 07-10 10→30: 조향루프 지연 감소(smoothing τ=dt/β를 1/3로, 노이즈필터 유지). 중앙추종 안정창 확대. 인지 카메라~26fps라 30Hz 수용.
         DeclareLaunchArgument('enable_drive', default_value='False',
                               description='True여야 throttle 발행. 거치대에서 시작.'),
         DeclareLaunchArgument('drive_throttle', default_value='0.0'),

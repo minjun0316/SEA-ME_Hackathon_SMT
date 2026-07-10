@@ -91,10 +91,11 @@ import numpy as np  # noqa: E402
 
 from control_msgs.msg import Control  # noqa: E402
 from nav_msgs.msg import Path as PathMsg  # noqa: E402
-from racer_msgs.msg import DriveCommand  # noqa: E402
+from racer_msgs.msg import DriveCommand, LaneStatus  # noqa: E402
 
 from core import path_factory  # noqa: E402
 from core.config_schema import load_config  # noqa: E402
+from core.control.lateral_pd import LateralPDController  # noqa: E402
 from core.control.pure_pursuit import PurePursuitController  # noqa: E402
 from core.control.speed_controller import SpeedController  # noqa: E402
 from core.geometry import Pose2D  # noqa: E402
@@ -115,8 +116,12 @@ class ControllerNode(Node):
         self.declare_parameter('source', 'static')
         # 사용할 정적 경로(source=static): straight | circle | s_curve | sharp_s | figure_eight | rotary
         self.declare_parameter('path', 'straight')
+        # 횡제어 법칙: pure_pursuit(경로 룩어헤드) | lateral_pd(근거리 offset+heading PD).
+        # lateral_pd는 lane_path 대신 /perception/lane_status의 lateral_offset·heading_error를 쓴다.
+        self.declare_parameter('lateral_controller', 'pure_pursuit')
         # 폐루프(topic) 입력 토픽 + watchdog.
         self.declare_parameter('lane_path_topic', '/perception/lane_path')
+        self.declare_parameter('lane_status_topic', '/perception/lane_status')
         self.declare_parameter('drive_command_topic', '/decision/drive_command')
         self.declare_parameter('lane_timeout', 0.3)  # lane_path 끊김 판정[s] → 정지.
         # core 설정 YAML (비우면 core_root/config 의 기본 파일을 순서대로 병합).
@@ -153,10 +158,17 @@ class ControllerNode(Node):
         self.source = str(self.get_parameter('source').value).strip().lower()
         if self.source not in ('static', 'topic'):
             raise ValueError("source must be 'static' or 'topic'")
+        self.lateral_controller = str(
+            self.get_parameter('lateral_controller').value).strip().lower()
+        if self.lateral_controller not in ('pure_pursuit', 'lateral_pd'):
+            raise ValueError("lateral_controller must be 'pure_pursuit' or 'lateral_pd'")
+        self.use_lateral_pd = self.lateral_controller == 'lateral_pd'
         self.lane_timeout = float(self.get_parameter('lane_timeout').value)
         # 폐루프 입력 상태(topic 모드).
         self._topic_path = None          ##< 최신 lane_path → core.Path(없으면 None).
         self._topic_path_time = None     ##< 최신 lane_path 수신 시각.
+        self._lane_status = None         ##< 최신 LaneStatus(lateral_pd 모드).
+        self._lane_status_time = None    ##< 최신 LaneStatus 수신 시각.
         self._drive_cmd = None           ##< 최신 DriveCommand(게이트). 없으면 게이트 통과.
         self._drive_cmd_time = None      ##< 최신 DriveCommand 수신 시각(stale 판정).
         self._last_steer = None          ##< 마지막 발행 조향(정지 시 유지용).
@@ -165,9 +177,23 @@ class ControllerNode(Node):
         config_files = self._resolve_config_files()
         self.config = load_config(*config_files)
 
+        # --- lateral_pd 게인 CLI 오버라이드 (pd_* 문자열 파라미터) ---
+        # 튜닝 편의: `racer-run pd_k_heading:=0.4`처럼 파일 안 고치고 즉석 스윕.
+        # 비워두면(기본 '') YAML 값을 그대로 쓴다. 좋은 값이 나오면 YAML에 박아 영구화.
+        lpd = self.config.lateral_pd
+        for _name in ('steering_sign', 'k_cross', 'k_heading', 'k_deriv',
+                      'deriv_smoothing', 'max_offset', 'steering_smoothing'):
+            self.declare_parameter(f'pd_{_name}', '')
+            _v = str(self.get_parameter(f'pd_{_name}').value).strip()
+            if _v:
+                setattr(lpd, _name, float(_v))
+                self.get_logger().info(
+                    f'  lateral_pd.{_name} = {float(_v)} (CLI 오버라이드, YAML 무시)')
+
         # --- core 객체 구성 ---
         self.path = path_factory.make_path(self.path_name)
         self.pp = PurePursuitController(self.config.vehicle, self.config.pure_pursuit)
+        self.lat = LateralPDController(self.config.vehicle, self.config.lateral_pd)
         self.speed = SpeedController(self.config.speed)
         # Adaptive lookahead 초기 속도값(첫 스텝용). 이후 target_speed로 갱신.
         self._last_speed = self.config.speed.v_min
@@ -197,18 +223,29 @@ class ControllerNode(Node):
 
         # 폐루프(topic): 경로/판단 명령 구독.
         if self.source == 'topic':
-            lane_topic = str(self.get_parameter('lane_path_topic').value)
             cmd_topic = str(self.get_parameter('drive_command_topic').value)
-            # lane_path는 인지가 best-effort로 발행(계약 §3) → 구독도 best-effort로 맞춤.
-            # (reliable로 구독하면 QoS 불일치로 메시지를 아예 못 받음.)
             best_effort_q = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
                                        history=HistoryPolicy.KEEP_LAST)
-            self.create_subscription(PathMsg, lane_topic, self._on_lane_path, best_effort_q)
+            if self.use_lateral_pd:
+                # lateral_pd: 근거리 offset+heading. lane_status는 reliable 발행(계약 §4.3).
+                status_topic = str(self.get_parameter('lane_status_topic').value)
+                self.create_subscription(
+                    LaneStatus, status_topic, self._on_lane_status, 1)
+                self.get_logger().info(
+                    f'source=topic, lateral_controller=lateral_pd → 구독 '
+                    f'lane_status={status_topic}, drive_command={cmd_topic}, '
+                    f'lane_timeout={self.lane_timeout}s')
+            else:
+                # pure_pursuit: lane_path(인지가 best-effort 발행 §3) → best-effort로 맞춤.
+                lane_topic = str(self.get_parameter('lane_path_topic').value)
+                self.create_subscription(
+                    PathMsg, lane_topic, self._on_lane_path, best_effort_q)
+                self.get_logger().info(
+                    f'source=topic, lateral_controller=pure_pursuit → 구독 '
+                    f'lane_path={lane_topic}, drive_command={cmd_topic}, '
+                    f'lane_timeout={self.lane_timeout}s (끊기면 정지, 조향 유지)')
             # drive_command는 판단이 reliable로 발행 → reliable(기본) 유지.
             self.create_subscription(DriveCommand, cmd_topic, self._on_drive_command, 1)
-            self.get_logger().info(
-                f'source=topic → 구독 lane_path={lane_topic}, drive_command={cmd_topic}, '
-                f'lane_timeout={self.lane_timeout}s (끊기면 정지, 조향 유지)')
 
         self.timer = self.create_timer(self.dt, self.timer_callback)
 
@@ -251,10 +288,26 @@ class ControllerNode(Node):
             self.get_logger().warn(f'lane_path 변환 실패: {exc}')
             self._topic_path = None
 
+    def _on_lane_status(self, msg: LaneStatus):
+        """@brief /perception/lane_status 저장(lateral_pd 모드 입력)."""
+        self._lane_status = msg
+        self._lane_status_time = self.get_clock().now()
+
     def _on_drive_command(self, msg: DriveCommand):
         """@brief /decision/drive_command 저장(게이트/배율 적용용)."""
         self._drive_cmd = msg
         self._drive_cmd_time = self.get_clock().now()
+
+    def _select_lane_status(self):
+        """@brief lateral_pd용 최신 LaneStatus + 정지사유. @return (status, stop_reason|None)."""
+        if self._lane_status is None or self._lane_status_time is None:
+            return None, 'no_lane_status'
+        age = (self.get_clock().now() - self._lane_status_time).nanoseconds * 1e-9
+        if age > self.lane_timeout:
+            return None, 'lane_timeout'
+        if not self._lane_status.lane_detected:
+            return None, 'lane_lost'
+        return self._lane_status, None
 
     def _select_path(self):
         """@brief 이번 주기 사용할 경로와 정지사유를 반환. @return (path, stop_reason|None)."""
@@ -274,7 +327,11 @@ class ControllerNode(Node):
         @details 폐루프(topic)에서 pose는 항상 로컬 원점. 경로가 없거나 끊기면(watchdog)
         또는 drive_command가 정지(go=false/STOP/LOST)면 throttle=0(조향은 마지막값 유지).
         """
-        path, stop_reason = self._select_path()
+        # 입력 선택: 법칙에 따라 lane_status(lateral_pd) 또는 lane_path(pure_pursuit).
+        if self.use_lateral_pd:
+            control_input, stop_reason = self._select_lane_status()
+        else:
+            control_input, stop_reason = self._select_path()
 
         # 판단 게이트: drive_command가 있으면 정지여부/속도배율 반영(없으면 통과).
         # 명령이 stale(판단 노드 끊김)하면 fail-safe 정지(오래된 go 명령을 붙들지 않음).
@@ -296,18 +353,27 @@ class ControllerNode(Node):
                     gate_reason = 'gate'
 
         stop = (stop_reason is not None) or gate_stop
+        dbg = None  # 주행 중이면 로그용 상세 문자열, 정지면 None.
 
-        if stop or path is None:
+        if stop or control_input is None:
             # 정지: throttle=0, 조향은 마지막값 유지(없으면 트림=중립).
             steering = (self._last_steer if self._last_steer is not None
                         else float(self.config.vehicle.steer_trim))
             throttle = 0.0
-            pp = None
         else:
-            pp = self.pp.compute(self.pose, path, self._last_speed)
-            sp = self.speed.compute(pp.curvature, self._last_speed, self.dt)
-            self._last_speed = sp.target_speed
-            steering = float(pp.steering_norm)
+            if self.use_lateral_pd:
+                # 근거리 PD: lane_status의 offset+heading으로 조향(경로/pose 불필요).
+                lat = self.lat.compute(float(control_input.lateral_offset),
+                                       float(control_input.heading_error), self.dt)
+                steering = float(lat.steering_norm)
+                dbg = (f'off={lat.lateral_offset:+.3f}m head={lat.heading_error:+.3f}rad '
+                       f'pC={lat.p_cross:+.3f} pH={lat.p_heading:+.3f}')
+            else:
+                pp = self.pp.compute(self.pose, control_input, self._last_speed)
+                sp = self.speed.compute(pp.curvature, self._last_speed, self.dt)
+                self._last_speed = sp.target_speed
+                steering = float(pp.steering_norm)
+                dbg = f'κ={pp.curvature:+.3f} Ld={pp.lookahead:.2f}'
             # steer_limit(정규화 조향 상한) 적용.
             if steer_limit < 1.0:
                 steering = max(-steer_limit, min(steer_limit, steering))
@@ -331,10 +397,10 @@ class ControllerNode(Node):
         reason = stop_reason or gate_reason or 'drive'
         if self._tick % self._log_period == 0 or (self._prev_log_steer != reason):
             self._prev_log_steer = reason
-            if pp is not None:
+            if dbg is not None:
                 self.get_logger().info(
-                    f'[{reason}] steer={steering:+.4f} (κ={pp.curvature:+.3f}) '
-                    f'throttle={throttle:.3f} scale={speed_scale:.2f} Ld={pp.lookahead:.2f}')
+                    f'[{reason}] steer={steering:+.4f} {dbg} '
+                    f'throttle={throttle:.3f} scale={speed_scale:.2f}')
             else:
                 self.get_logger().info(
                     f'[STOP:{reason}] steer={steering:+.4f}(유지) throttle=0.0')

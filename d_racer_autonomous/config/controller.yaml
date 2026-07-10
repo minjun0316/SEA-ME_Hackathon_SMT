@@ -5,16 +5,25 @@
 # 바꾼다. 컨트롤러 자체는 모든 상태에서 동일하다.
 
 pure_pursuit:
-  use_adaptive_lookahead: false # 07-09: 실차 직선서 S자 발산(폐루프 불안정). adaptive는 노이즈 path를 가짜 곡률로 읽어 Ld를 줄임→더 신경질적→악순환. 안정 확보까지 고정 lookahead 사용(악순환 차단). 안정되면 true로 되돌리며 kc 낮춰 재시도.
-  fixed_lookahead: 0.6          # use_adaptive_lookahead=false일 때 사용 [m]. 길수록 직선 안정(jitter Δy가 타깃각에 덜 반영)·커브 코너컷↑. 발산하면 0.7~0.8, 커브 못돌면 0.5.
+  use_adaptive_lookahead: true  # 07-10 재활성: 07-09 발산원인(생 곡률로 Ld 축소)을 코어에서 제거 — compute_lookahead가 이제 _smooth_kappa의 κ_eff(EMA+데드밴드)를 써 직선 노이즈가 Ld를 못 줄인다. 고정 Ld 0.6은 직선OK지만 곡선 코너컷/탈출 진동 → adaptive로 곡선서 Ld 단축(민첩+빠른정착). 주 레버는 속도항(kv): 직선 빠름→길게, 곡선 감속→짧게(속도컨트롤러가 곡선 감속하므로 신뢰도 높음). 발산 재발 시 kc/steering_gain 낮추거나 fixed로 폴백.
+  fixed_lookahead: 0.6          # 0.55→0.6(07-10 실측후): /perception/lane_path 실측 15.0Hz(std 0.002s=카메라 프레임레이트에 고정, detect는 여유). 제어루프 30Hz 튜닝(0.55)의 절반 신선도라 지연 τ 33→66ms(2배)→저댐핑 꿀렁. Ld↑로 위상여유 확보 & 크로스트랙게인 2L/Ld²도 (0.55/0.6)²=0.84배로 낮춰 앞선 +62% 부스트 일부 상쇄(이중효과). 여전히 꿀렁이면 0.65, 커브 코너컷 생기면 0.55복귀+steering_gain 0.75→0.65로 대체. 근본치료는 카메라 15→30fps(팀원 소유). ▷이전: 0.7→0.55(rate 30Hz 후) S자는 지연 리밋사이클이라 rate↑로 소멸, 크로스트랙게인 0.53→0.87 회복. (10Hz땐 0.6이 S자였으나 rate 다름)
   # Adaptive: Ld = ld_min + kv*speed - kc*|curvature|, [ld_min, ld_max]로 clip.
-  ld_min: 0.45                  # 최소 lookahead [m]. 너무 작으면 진동. 0.3→0.4(20°때 코너컷 원복)→0.45(07-09): max_steer 15.5° 정정으로 이제 잘 꺾여 코너컷 여유↑. 직선 jitter 대응 핵심 레버 — 길수록 차선 흔들림 Δy가 타깃각 α=atan2(Δy,Δx)에 덜 반영돼 조향 둔감. 시뮬 커브 완주 유지(sharp_s RMS 2.0→~3.5cm). 실차서 커브 코너컷/못돌면 0.4로.
+  ld_min: 0.45                  # 최소 lookahead(=곡선 Ld) [m]. 곡선서 여기로 수렴. 0.45(07-09 max_steer 15.5° 정정 후 코너컷 여유). 실차서 커브 코너컷/못돌면 0.4로, 곡선서 떨면 0.5로.
   ld_max: 1.2                   # 최대 lookahead [m]. 너무 크면 코너 컷(corner cut).
-  kv: 0.4                       # 속도 이득 [s]. 빠를수록 멀리 본다 → 안정.
-  kc: 0.1                       # 곡률 이득 [m^2]. 곡률 클수록 가까이 본다 → 민첩.
-  steering_gain: 1.0            # 출력 보정. 1.3→1.1→0.9(07-08, max_steer 10° 오류를 억지로 누르던 값)→1.0(07-09): max_steer_deg 10→20° 정정으로 과조향 근본 해결됨. 20°에서 gain 스윕(수신지평선 시뮬 R=1.2m): 0.9=CTE1.06cm, 1.0=0.33cm(최적), 1.1=0.52cm. 실차서 바깥으로 부풀면 1.1, 안쪽 파고들면 0.9.
+  kv: 0.2                       # 속도 이득 [s]. 0.17→0.2 복귀(07-10 preview 도입 후): kv 낮춰 턴인 늦추기(직선 Ld까지 같이 줄어 꿀렁)는 한계 도달 → 턴인은 이제 curvature_preview가 담당. 그래서 kv는 직선 Ld=0.45+0.2·0.8=0.61로 되돌려 직선 감쇠(꿀렁↓) 강화. 직선 굼뜨면 ↑, 직선 떨면 preview는 그대로 두고 여기 ↓.
+  kc: 0.3                       # 곡률 이득 [m^2]. 0.2→0.3: preview로 곡선 미리 볼 때 접근 Ld 수축 깊이↑=턴인 더 지연(계속 먼저 꺾어서). 곡선 코너컷이면 ↑, 곡선서 떨면 ↓.
+  # preview: adaptive/gain 곡률을 nearest 대신 전방 preview[m] 구간 max|κ|로 읽음. 곡선 진입 전 Ld 수축→턴인 지연(직선 Ld 무영향). 진입 타이밍↔직선Ld 분리.
+  curvature_preview: 0.9        # 07-10: 0.6→0.9(계속 먼저 꺾어서). 전방 0.9m 곡률을 봐 진입 전 Ld 수축→턴인 지연. 직선(preview 안에 곡선 없음)은 Ld 길게 유지. ⚠️인지 lane_path가 이보다 짧으면(전방 도달거리<0.9m) 효과 제한 — 경로 길이 실측 필요. 진입이 너무 늦어 코너컷이면 ↓(0.6), 0이면 nearest만.
+  steering_gain: 0.75           # 07-10: 곡률게인 OFF, 상수로 복귀. lookahead 0.75와 함께 실효게인 2L/Ld²·g≈0.47. 직선 발산 잡는 게 우선. 아직 진동하면 0.65로, 굼뜨면 0.85로.
   steering_smoothing: 0.2       # 신규 명령 가중치 β. out=(1-β)*old+β*new. 작을수록 부드럽고 느림(damping↑) BUT 위상지연↑ → 폐루프 발산 시엔 오히려 독. 0.12(07-09 낮췄다가 S자발산 의심)→0.2 복귀: 지연 축소 우선. 노이즈 떨림만 남으면(발산 아님) 0.15로.
   search_window: 60             # 전방 최근접 탐색 윈도우(점 개수). 자기교차/되돌아오는 경로 안정화. 0=전역탐색.
+  # 곡률 스케줄 gain: gain = clip(steering_gain + steering_gain_kappa*κ_eff, steering_gain, steering_gain_max).
+  # κ_s=EMA(|κ|), κ_eff=max(0, κ_s - curvature_deadband). 직선 gain 낮게/커브 gain 높게 자동 전환.
+  use_curvature_gain: false     # 07-10: 직선 발산 유발로 OFF. 원인=직선 지터가 가짜 곡률→gain↑→진동↑→곡률 더 크게 읽힘→gain↑ (양의 피드백=발산). 직선 안정 확보 후 커브는 adaptive lookahead로 대체(피드백 고리 없음). 재활성 시 deadband 크게+smoothing 작게 필수.
+  steering_gain_kappa: 0.25     # |κ_eff| 계수. 커브서 gain 가산량. 커브 못돌면(run wide) ↑, 커브서 파고들면 ↓. 예상 커브 κ≈0.8~1.7(R 0.6~1.2m).
+  steering_gain_max: 1.0        # 곡률 가산 후 gain 상한. 과조향 방지.
+  curvature_deadband: 0.3       # 이하 |κ_s|는 직선 취급(gain=baseline). 직선을 곡률 노이즈로부터 격리. 직선서 gain이 들썩이면 ↑, 완만커브 반응 느리면 ↓.
+  curvature_smoothing: 0.3      # 곡률 EMA α: κ_s=(1-α)κ_s+α|κ|. 작을수록 강한 저역통과(노이즈↓·지연↑). 직선 gain 떨림 심하면 0.2로.
 
 speed:
   v_max: 0.8                    # 직선 최대 속도(정규화 또는 m/s).
@@ -24,6 +33,19 @@ speed:
   kp: 0.5
   ki: 0.0
   kd: 0.0
+
+# --- 근거리 차선오차 PD(+heading) 횡제어 (lateral_controller:=lateral_pd 일 때 사용) ---
+# Pure Pursuit의 먼 룩어헤드(BEV 원거리 노이즈 증폭) 대신 인지의 근거리 신호
+# lateral_offset[m]+heading_error[rad]만 씀. 직선 꿀렁이 PP보다 확실히 적음(07-10 실차 A/B 확인).
+# δ = sign·(k_cross·offset + k_heading·heading + k_deriv·d(offset)/dt), +트림+smoothing.
+lateral_pd:
+  steering_sign: 1.0            # +1=+오차→좌회전(D-Racer). ⚠️거치대서 반대로 꺾이면 -1로. 실차 첫 구동 전 방향 확인.
+  k_cross: 1.2                 # offset[m]→조향. 차선중심 복귀 P. 차선 이탈 복귀 느리면 ↑, 직선서 떨면 ↓.
+  k_heading: 0.4               # heading[rad]→조향. 0.8→0.6→0.4(07-10 실차: 0.6도 과조향). heading을 확 낮춰 원인 판별. 파고들면 ↓, 런와이드면 ↑. 브래킷: 0.8·0.6 오버 → 0.4서 (a)해결=답 0.4~0.5 (b)여전히 오버=heading 원인 아님(지연 오버슛→속도↓/β↑) (c)런와이드=0.5.
+  k_deriv: 0.0                 # d(offset)/dt 댐핑(선택). 근거리 노이즈 커서 기본 0. 저주파 꿀렁 남으면 소량(0.05) 시도.
+  deriv_smoothing: 0.3         # 미분 EMA(노이즈 저역통과). k_deriv 쓸 때만 의미.
+  max_offset: 0.5             # offset 클램프[m]. 오검출 스파이크→과조향 방지.
+  steering_smoothing: 0.3      # 출력 β: out=(1-β)old+β new. 작을수록 부드럽(지연↑). 떨림 남으면 ↓(0.25), 굼뜨면 ↑.
 
 battery:
   enabled: false                # 배터리 토픽(/battery_status) 연동 시 true.

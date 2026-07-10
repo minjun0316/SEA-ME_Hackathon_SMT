@@ -62,12 +62,40 @@ class PurePursuitConfig:
     ld_max: float = 1.2                  ##< Adaptive 최대 lookahead [m].
     kv: float = 0.4                      ##< 속도 이득 K_v [s].
     kc: float = 0.1                      ##< 곡률 이득 K_c [m^2].
-    steering_gain: float = 1.0           ##< Pure Pursuit 출력 스케일 보정.
+    curvature_preview: float = 0.0       ##< adaptive/gain용 곡률을 nearest 대신 전방 preview[m] 구간의 max|κ|로 읽는다. 0이면 nearest만. >0이면 곡선 진입 전 Ld가 미리 수축→턴인 지연(직선 Ld는 무영향).
+    steering_gain: float = 1.0           ##< Pure Pursuit 출력 스케일 보정(곡률 스케줄 시 직선 baseline=하한).
     steering_smoothing: float = 0.3      ##< 신규 명령 가중치 β: out = (1-β)·old + β·new.
     search_window: int = 60              ##< 전방 최근접 탐색 윈도우(점 개수). 0이면 전역 탐색.
+    # 곡률 스케줄 gain: gain = clip(steering_gain + kappa*κ_eff, steering_gain, max).
+    use_curvature_gain: bool = False     ##< True면 곡률에 따라 gain 가산(직선 낮게/커브 높게). False=상수.
+    steering_gain_kappa: float = 0.0     ##< |κ_eff| 계수. +면 커브서 gain↑.
+    steering_gain_max: float = 1.2       ##< 곡률 가산 후 gain 상한(클램프).
+    curvature_deadband: float = 0.3      ##< 이하 |κ|는 직선 취급(노이즈 격리). κ_eff=max(0,|κ_s|-deadband).
+    curvature_smoothing: float = 0.3     ##< 곡률 EMA 가중치: κ_s = (1-α)·κ_s + α·|κ|. 작을수록 강한 저역통과.
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PurePursuitConfig":
+        return cls(**_filter_known(cls, data or {}))
+
+
+@dataclass
+class LateralPDConfig:
+    """@brief 근거리 차선오차 PD(+heading) 횡제어 파라미터.
+
+    @details δ = k_heading·heading_error + k_cross·lateral_offset + k_deriv·d(e)/dt.
+    부호 규약: +오차/+heading → +조향(좌). 출력은 정규화[-1,1]+트림+smoothing.
+    """
+
+    steering_sign: float = 1.0  ##< 조향 부호(차량 적응). +1=+오차→좌회전. 거치대서 반대로 꺾이면 -1. ⚠️실차 첫 구동 전 확인.
+    k_cross: float = 1.2        ##< lateral_offset[m] → 정규화 조향. 예: 0.1m→0.12. 차선복귀 P.
+    k_heading: float = 0.8      ##< heading_error[rad] → 조향. 위빙 억제·자연 감쇠(Stanley heading항). 커브 못돌면 ↑.
+    k_deriv: float = 0.0        ##< d(lateral)/dt 항(선택 D). 근거리 노이즈 커서 기본 0(heading이 주 감쇠).
+    deriv_smoothing: float = 0.3  ##< 미분 EMA 가중치(노이즈 저역통과). 작을수록 강한 필터.
+    max_offset: float = 0.5     ##< lateral_offset 클램프[m](오검출 스파이크→과조향 방지).
+    steering_smoothing: float = 0.3  ##< 출력 β: out=(1-β)·old+β·new. 작을수록 부드럽(지연↑).
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "LateralPDConfig":
         return cls(**_filter_known(cls, data or {}))
 
 
@@ -211,6 +239,7 @@ class AppConfig:
 
     vehicle: VehicleConfig = field(default_factory=VehicleConfig)
     pure_pursuit: PurePursuitConfig = field(default_factory=PurePursuitConfig)
+    lateral_pd: LateralPDConfig = field(default_factory=LateralPDConfig)
     speed: SpeedConfig = field(default_factory=SpeedConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     mission: MissionConfig = field(default_factory=MissionConfig)
@@ -223,6 +252,7 @@ class AppConfig:
         return cls(
             vehicle=VehicleConfig.from_dict(data.get("vehicle", {})),
             pure_pursuit=PurePursuitConfig.from_dict(data.get("pure_pursuit", {})),
+            lateral_pd=LateralPDConfig.from_dict(data.get("lateral_pd", {})),
             speed=SpeedConfig.from_dict(data.get("speed", {})),
             decision=DecisionConfig.from_dict(data.get("decision", {})),
             mission=MissionConfig.from_dict(data.get("mission", {})),
@@ -237,7 +267,7 @@ def load_config(*yaml_paths: str) -> AppConfig:
     @param yaml_paths 읽을 YAML 경로들. 뒤쪽 파일이 앞쪽을 덮어쓴다(merge).
     @return 검증된 AppConfig.
 
-    @note 최상위 키(vehicle/pure_pursuit/speed/decision/mission/battery/sim) 단위로 얕게
+    @note 최상위 키(vehicle/pure_pursuit/lateral_pd/speed/decision/mission/battery/sim) 단위로 얕게
           병합한다. 같은 섹션의 일부 키만 override 하려면 해당 섹션 전체를
           한 파일에 두는 것을 권장한다.
     """
