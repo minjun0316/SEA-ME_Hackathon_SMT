@@ -9,6 +9,11 @@ class MonitorState:
         self._lock = threading.Lock()
         self._stale_timeout_sec = stale_timeout_sec
 
+        # 토픽 수신율(Hz) 미터: 이름별 최근 도착 시각(monotonic) 목록.
+        # 최근 _rate_window_sec 창의 도착 간격 평균으로 Hz를 낸다(ros2 topic hz 방식).
+        self._rate_window_sec = 5.0
+        self._rate_events = {}
+
         self._battery_status = None
         self._battery_updated_at = None
         self._battery_updated_monotonic = None
@@ -31,6 +36,12 @@ class MonitorState:
         self._control_updated_at = None
         self._control_updated_monotonic = None
 
+        # 인지→제어 핸드오프 경로(/perception/lane_path). detect()가 edge+sliding
+        # window+centerline을 한 콜백에서 계산·발행하므로 이 토픽 rate = 차선 인지 처리율.
+        self._lane_path_num_points = None
+        self._lane_path_updated_at = None
+        self._lane_path_updated_monotonic = None
+
         self._is_recording = False
         self._recording_updated_at = None
         self._recording_updated_monotonic = None
@@ -46,6 +57,31 @@ class MonitorState:
             return True
 
         return (time.monotonic() - updated_monotonic) > self._stale_timeout_sec
+
+    def _record_rate_locked(self, name, now_monotonic):
+        """@brief 수신 이벤트 1건 기록(호출자가 이미 lock 보유). 창 밖 샘플은 정리."""
+        events = self._rate_events.get(name)
+        if events is None:
+            events = []
+            self._rate_events[name] = events
+        events.append(now_monotonic)
+        cutoff = now_monotonic - self._rate_window_sec
+        while events and events[0] < cutoff:
+            events.pop(0)
+
+    def _hz_locked(self, name):
+        """@brief 최근 창의 도착 간격 평균으로 Hz 산출(호출자가 lock 보유). 샘플 부족 시 None."""
+        events = self._rate_events.get(name)
+        if not events:
+            return None
+        cutoff = time.monotonic() - self._rate_window_sec
+        recent = [t for t in events if t >= cutoff]
+        if len(recent) < 2:
+            return None
+        span = recent[-1] - recent[0]
+        if span <= 0.0:
+            return None
+        return (len(recent) - 1) / span
 
     def _format_gb(self, size_bytes):
         if size_bytes is None:

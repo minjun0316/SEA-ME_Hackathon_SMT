@@ -34,6 +34,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -146,6 +147,16 @@ def generate_launch_description():
             'drive_throttle': LaunchConfiguration('drive_throttle'),
             'throttle_limit': LaunchConfiguration('throttle_limit'),
             'lane_timeout': LaunchConfiguration('lane_timeout'),
+            # lateral_pd 게인 CLI 오버라이드(빈 문자열이면 노드가 YAML값 유지).
+            # value_type=str로 강제 — 안 그러면 launch가 '0.4'를 double로 추론해
+            # 노드의 string 선언과 타입 충돌. 노드가 문자열을 받아 float 파싱한다.
+            'pd_k_cross': ParameterValue(LaunchConfiguration('pd_k_cross'), value_type=str),
+            'pd_k_heading': ParameterValue(LaunchConfiguration('pd_k_heading'), value_type=str),
+            'pd_k_deriv': ParameterValue(LaunchConfiguration('pd_k_deriv'), value_type=str),
+            'pd_deriv_smoothing': ParameterValue(LaunchConfiguration('pd_deriv_smoothing'), value_type=str),
+            'pd_max_offset': ParameterValue(LaunchConfiguration('pd_max_offset'), value_type=str),
+            'pd_steering_smoothing': ParameterValue(LaunchConfiguration('pd_steering_smoothing'), value_type=str),
+            'pd_steering_sign': ParameterValue(LaunchConfiguration('pd_steering_sign'), value_type=str),
         }],
     )
 

@@ -189,6 +189,10 @@ class ControllerNode(Node):
                 setattr(lpd, _name, float(_v))
                 self.get_logger().info(
                     f'  lateral_pd.{_name} = {float(_v)} (CLI 오버라이드, YAML 무시)')
+        self.get_logger().info(
+            f'  lateral_pd 활성값: sign={lpd.steering_sign} k_cross={lpd.k_cross} '
+            f'k_heading={lpd.k_heading} k_deriv={lpd.k_deriv} '
+            f'smooth={lpd.steering_smoothing} max_off={lpd.max_offset}')
 
         # --- core 객체 구성 ---
         self.path = path_factory.make_path(self.path_name)

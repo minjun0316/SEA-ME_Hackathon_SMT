@@ -30,6 +30,18 @@ lane_detect_node:
 
     # --- 색/정지선 임계 ---
     yellow_pixel_threshold: 30
+    # 노랑 '우세'(노랑-only 마스크) 판정: 노랑 > yellow_pixel_threshold AND
+    # 노랑 >= 흰색×이 비율. 흰선 warm-tint 조각이 흰 차선을 버리게 하던 오판 방지.
+    # 1.0=노랑이 흰색보다 많아야 우세. 노란 차선 자꾸 놓치면 0.6으로, 흰선 밀리면 ↑.
+    yellow_over_white_ratio: 1.0
+
+    # --- 에지(Canny) 입력/임계 (흰선 끊김 개선, 07-10) ---
+    # 정리한 lane_mask에 직접 Canny → 윤곽 연속·깨끗(gray/blur 대비 '인식했다 말았다' 완화).
+    edge_from_mask: true    # false면 옛 경로(마스킹 BGR→gray→blur→Canny)
+    edge_close_ksize: 3     # MORPH_CLOSE/dilate 커널(작은 구멍 메움)
+    edge_dilate_iter: 1     # dilate 반복(차선 두껍게→창별 minpix 안정). 0=off
+    canny_lo: 30            # 옛 50→30(흰선 민감도↑). 노이즈 많으면 ↑
+    canny_hi: 90            # 옛 150→90. lo의 ~3배 유지
     stopline_len_threshold: 100.0  # 4점 횡스케일(0.002506)에 맞춰 하향. 물리 정지선 유지. 실측서 안잡히면 조정.
 
     # --- 커브: 한쪽 차선 소실 시 복원용 차선폭[BEV px] ---
@@ -41,3 +53,11 @@ lane_detect_node:
     # '미검출'로 보고 base를 화면 25%/75%에 고정(argmax가 0/노이즈를 base로 잡는 것 방지).
     # ↑ 노이즈를 차선으로 오인하면(엉뚱한 점 지속) 올리고, 흐린 차선을 자꾸 놓치면 내려.
     seed_min_fill: 0.05
+    seed_reacquire_blend: 0.5  # lost 재획득: base = prev*(1-b) + hist_peak*b. 0.5=반반.
+
+    # --- lock 중 히스토그램 블렌딩 (07-10, 기본 off) ---
+    # lock(추종 중)에도 매 프레임 hist peak를 seed에 섞어 커브 지연↓. 0.0=off(순수 prev).
+    # seed = prev*(1-b) + peak*b. 단, prev ±seed_hist_band_px 밴드 안 peak만·에지량
+    # 충분할 때만 섞음(반대차선 점프·garbage 배제). 켤 땐 0.1~0.3, seed 떨리면 낮춰.
+    seed_lock_hist_blend: 0.0
+    seed_hist_band_px: 60.0    # 위 밴드 폭(±px). 좁을수록 안전(점프 억제), 넓을수록 반응↑.

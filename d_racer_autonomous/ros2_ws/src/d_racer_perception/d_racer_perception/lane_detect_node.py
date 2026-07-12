@@ -82,8 +82,17 @@ class LaneDetectNode(Node):
         self.declare_parameter('bev_top_y', d.bev_top_y)
         self.declare_parameter('bev_top_x', d.bev_top_x)
         self.declare_parameter('yellow_pixel_threshold', d.yellow_pixel_threshold)
+        self.declare_parameter('yellow_over_white_ratio', d.yellow_over_white_ratio)
+        self.declare_parameter('edge_from_mask', d.edge_from_mask)
+        self.declare_parameter('edge_close_ksize', d.edge_close_ksize)
+        self.declare_parameter('edge_dilate_iter', d.edge_dilate_iter)
+        self.declare_parameter('canny_lo', d.canny_lo)
+        self.declare_parameter('canny_hi', d.canny_hi)
         self.declare_parameter('stopline_len_threshold', d.stopline_len_threshold)
         self.declare_parameter('lane_width_px', d.lane_width_px)
+        self.declare_parameter('seed_reacquire_blend', d.seed_reacquire_blend)
+        self.declare_parameter('seed_lock_hist_blend', d.seed_lock_hist_blend)
+        self.declare_parameter('seed_hist_band_px', d.seed_hist_band_px)
         # 체커보드 IPM 실측 BEV 행렬(이미지→BEV, 행우선 9값). 실차 노드는 IPM 전용.
         self.declare_parameter('bev_matrix', [0.0] * 9)
 
@@ -106,8 +115,17 @@ class LaneDetectNode(Node):
             bev_top_x=float(self.get_parameter('bev_top_x').value),
             bev_matrix=_bev,
             yellow_pixel_threshold=int(self.get_parameter('yellow_pixel_threshold').value),
+            yellow_over_white_ratio=float(self.get_parameter('yellow_over_white_ratio').value),
+            edge_from_mask=bool(self.get_parameter('edge_from_mask').value),
+            edge_close_ksize=int(self.get_parameter('edge_close_ksize').value),
+            edge_dilate_iter=int(self.get_parameter('edge_dilate_iter').value),
+            canny_lo=int(self.get_parameter('canny_lo').value),
+            canny_hi=int(self.get_parameter('canny_hi').value),
             stopline_len_threshold=float(self.get_parameter('stopline_len_threshold').value),
             lane_width_px=float(self.get_parameter('lane_width_px').value),
+            seed_reacquire_blend=float(self.get_parameter('seed_reacquire_blend').value),
+            seed_lock_hist_blend=float(self.get_parameter('seed_lock_hist_blend').value),
+            seed_hist_band_px=float(self.get_parameter('seed_hist_band_px').value),
         )
         self.detector = LaneDetector(calib)
 

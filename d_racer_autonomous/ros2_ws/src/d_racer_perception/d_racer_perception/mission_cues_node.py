@@ -20,6 +20,12 @@ red_zone)는 **stub**(기본값 발행) — 초록불(색검출)·빨강구역�
 from __future__ import annotations
 
 import os
+
+# 4코어 보드 CPU 경합 완화: YOLO(NCNN/torch) 네이티브 스레드풀 상한을 ultralytics
+# import 前에 고정한다(TrafficLightDetector가 지연 import). aruco 경로엔 영향 없음.
+os.environ.setdefault('OMP_NUM_THREADS', '2')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+
 import sys
 from pathlib import Path as _FsPath
 
@@ -59,6 +65,10 @@ from sensor_msgs.msg import CompressedImage  # noqa: E402
 from racer_msgs.msg import MissionCues  # noqa: E402
 
 from core.perception.aruco_detect import ArucoDetector, ArucoConfig  # noqa: E402
+from core.perception.traffic_light_detect import (  # noqa: E402
+    TrafficLightDetector, TrafficCueConfig, TL_NONE, TL_RED, TL_GREEN)
+
+from .yolo_test_common import resolve_model_path  # noqa: E402
 
 
 class MissionCuesNode(Node):
@@ -126,11 +136,72 @@ class MissionCuesNode(Node):
         self._held_present = False
         self._frames = 0
 
+        # --- YOLO 미션신호(신호등/체커보드) 검출 ---
+        # mission_cues_node가 MissionCues 주인이라 신호등·체커보드(둘 다 YOLO)도 여기서
+        # 채운다. ultralytics는 무거워 실패해도 aruco는 계속 동작하도록 격리.
+        self.declare_parameter('yolo_enable', True)
+        self.declare_parameter('yolo_model_path', 'best_ncnn_model')
+        self.declare_parameter('yolo_conf', 0.35)
+        self.declare_parameter('yolo_imgsz', 320)
+        self.declare_parameter('yolo_max_infer_hz', 6.0)     # 추론 상한(카메라 다 안 돌림→CPU 경합↓).
+        self.declare_parameter('yolo_cv_threads', 1)
+        self.declare_parameter('yolo_torch_threads', 2)
+        self.declare_parameter('yolo_stale_sec', 1.0)        # 이 시간 내 추론 없으면 신호 NONE.
+        self.declare_parameter('tl_prefer_red', True)        # 초록·빨강 동시 → RED(출발 안전측).
+        self.declare_parameter('tl_green_confirm_sec', 0.5)  # 초록 연속 확정 시간(오출발 방지).
+        self.declare_parameter('checker_hold_sec', 0.3)      # 체커보드 잠깐 놓쳐도 유지.
+
+        self.yolo_enable = bool(self.get_parameter('yolo_enable').value)
+        self.yolo_stale_sec = float(self.get_parameter('yolo_stale_sec').value)
+        self.tl_green_confirm_sec = float(self.get_parameter('tl_green_confirm_sec').value)
+        self.checker_hold_sec = float(self.get_parameter('checker_hold_sec').value)
+        _yolo_hz = float(self.get_parameter('yolo_max_infer_hz').value)
+        self._yolo_min_interval = 1.0 / _yolo_hz if _yolo_hz > 0.0 else 0.0
+
+        self.tl_detector = None
+        if self.yolo_enable:
+            try:
+                _model_path = resolve_model_path(
+                    self.get_parameter('yolo_model_path').value)
+                _tcfg = TrafficCueConfig(
+                    model_path=str(_model_path),
+                    conf=float(self.get_parameter('yolo_conf').value),
+                    imgsz=int(self.get_parameter('yolo_imgsz').value),
+                    prefer_red=bool(self.get_parameter('tl_prefer_red').value),
+                    cv_threads=int(self.get_parameter('yolo_cv_threads').value),
+                    torch_threads=int(self.get_parameter('yolo_torch_threads').value),
+                )
+                self.tl_detector = TrafficLightDetector(_tcfg)
+                self.get_logger().info(
+                    f'YOLO 미션신호 ON: model={_model_path} conf={_tcfg.conf} '
+                    f'imgsz={_tcfg.imgsz} max_hz={_yolo_hz} prefer_red={_tcfg.prefer_red} '
+                    f'green_confirm={self.tl_green_confirm_sec}s stale={self.yolo_stale_sec}s')
+            except Exception as e:  # noqa: BLE001 - 모델/torch 미비 시 aruco만 계속.
+                self.tl_detector = None
+                self.get_logger().warn(
+                    f'YOLO 초기화 실패 → 신호등/체커보드 비활성(aruco만 동작): {e}')
+        else:
+            self.get_logger().info('yolo_enable=False → 신호등/체커보드 stub(aruco만).')
+
+        # YOLO 디버그 오버레이(옵션, aruco와 별도 토픽).
+        self.pub_yolo_debug = None
+        if self.publish_debug and self.tl_detector is not None:
+            self.pub_yolo_debug = self.create_publisher(
+                CompressedImage, 'perception/mission_cues/yolo/debug/compressed', 1)
+
+        # YOLO 시간 상태(스로틀·초록 확정·체커 hold).
+        self._yolo_last_infer: Time | None = None    ##< 마지막 추론 시각(스로틀).
+        self._yolo_result_time: Time | None = None   ##< 마지막 추론 결과 시각(stale 판정).
+        self._tl_raw_light = TL_NONE                  ##< 마지막 추론 프레임단위 신호.
+        self._green_since: Time | None = None         ##< 초록 연속 시작 시각(확정용).
+        self._checker_seen_time: Time | None = None   ##< 체커보드 마지막 검출 시각(hold).
+
         self.get_logger().info(
             f'mission_cues_node ready: sub={image_topic} → pub {cues_topic} (reliable). '
             f'ArUco dict={cfg.dictionary} ids={"ANY" if use_any else list(cfg.target_ids)} '
             f'roi_bottom={cfg.roi_bottom_frac} hold={self.hold_sec}s. '
-            f'traffic_light/checkerboard/red_zone=stub(미구현).')
+            f'traffic_light/checkerboard=YOLO({"ON" if self.tl_detector else "OFF"}), '
+            f'red_zone=stub(미구현).')
 
     def on_image(self, msg: CompressedImage):
         """@brief compressed 디코드 → ArUco 검출 → 홀드 → MissionCues 발행."""
@@ -152,12 +223,37 @@ class MissionCuesNode(Node):
             if elapsed >= self.hold_sec:
                 self._held_present = False
 
-        # --- MissionCues 발행(aruco만 실제값, 나머지 stub) ---
+        # --- YOLO 미션신호: 스로틀 추론 → 초록 연속 확정 / 체커 hold 갱신 ---
+        if self.tl_detector is not None:
+            due = (self._yolo_last_infer is None or
+                   (now - self._yolo_last_infer).nanoseconds * 1e-9
+                   >= self._yolo_min_interval)
+            if due:
+                self._yolo_last_infer = now
+                tl = self.tl_detector.detect(
+                    frame, want_debug=self.pub_yolo_debug is not None)
+                self._yolo_result_time = now
+                self._tl_raw_light = tl.light
+                # 초록이면 연속 시작시각 유지, 아니면 확정 타이머 리셋.
+                self._green_since = (
+                    (self._green_since or now) if tl.light == TL_GREEN else None)
+                if tl.checker:
+                    self._checker_seen_time = now
+                if self.pub_yolo_debug is not None and tl.debug_image is not None:
+                    self._publish_jpeg(self.pub_yolo_debug, tl.debug_image, msg.header.stamp)
+                self.get_logger().info(
+                    f'yolo light={tl.light} g={tl.green_conf:.2f} r={tl.red_conf:.2f} '
+                    f'checker={tl.checker}({tl.checker_conf:.2f}) boxes={tl.num_boxes}',
+                    throttle_duration_sec=1.0)
+
+        tl_state, checker_det = self._resolve_cues(now)
+
+        # --- MissionCues 발행(aruco/신호등/체커보드 실제값, red_zone stub) ---
         cue = MissionCues()
         cue.header.stamp = msg.header.stamp
         cue.header.frame_id = self.base_frame
-        cue.traffic_light = MissionCues.TL_NONE      # stub(초록불 색검출 후속).
-        cue.checkerboard_detected = False            # stub(YOLO 후속).
+        cue.traffic_light = tl_state                 # YOLO 신호등(초록 확정 후 GREEN).
+        cue.checkerboard_detected = checker_det      # YOLO 체커보드(hold).
         cue.red_zone_detected = False                # stub(색검출 후속).
         cue.aruco_present = bool(self._held_present)
         self.pub_cues.publish(cue)
@@ -170,6 +266,32 @@ class MissionCuesNode(Node):
             self.get_logger().info(
                 f'aruco raw={res.present} ids={res.ids} → present(held)={self._held_present}',
                 throttle_duration_sec=0.5)
+
+    def _resolve_cues(self, now):
+        """@brief 시간 상태로 발행할 traffic_light + checkerboard 계산.
+
+        @details 추론이 stale(오래됨)하거나 없으면 NONE/false로 폴백(끊긴 프레임에 붙들려
+        가짜 신호 유지 방지). 초록은 tl_green_confirm_sec 동안 **연속**돼야 TL_GREEN을 낸다
+        (한 프레임 가짜 초록 오출발 방지) — 확정 전엔 NONE(대기). 빨강은 즉시(대기라 안전).
+        체커보드는 hold로 잠깐 놓쳐도 유지. @return (traffic_light, checkerboard_detected).
+        """
+        if self.tl_detector is None or self._yolo_result_time is None:
+            return MissionCues.TL_NONE, False
+        fresh = (now - self._yolo_result_time).nanoseconds * 1e-9 <= self.yolo_stale_sec
+        if not fresh:
+            return MissionCues.TL_NONE, False
+
+        if self._tl_raw_light == TL_RED:
+            light = MissionCues.TL_RED
+        elif (self._tl_raw_light == TL_GREEN and self._green_since is not None and
+              (now - self._green_since).nanoseconds * 1e-9 >= self.tl_green_confirm_sec):
+            light = MissionCues.TL_GREEN
+        else:
+            light = MissionCues.TL_NONE   # 초록 확정 전/미검출 → 대기.
+
+        checker = (self._checker_seen_time is not None and
+                   (now - self._checker_seen_time).nanoseconds * 1e-9 <= self.checker_hold_sec)
+        return light, checker
 
     def _publish_jpeg(self, pub, img, stamp):
         ok, enc = cv2.imencode(

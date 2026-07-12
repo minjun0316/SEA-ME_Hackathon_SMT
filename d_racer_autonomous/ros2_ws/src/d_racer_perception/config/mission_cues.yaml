@@ -14,3 +14,18 @@ mission_cues_node:
     aruco_roi_bottom_frac: 1.0      # 화면 전체(막대로 멀리서 보여주므로 하단 ROI 아님)
     aruco_min_perimeter_px: 0.0     # 이 둘레(px) 미만 마커 무시. 0=끔. 원거리 오검 나면 ↑
     aruco_hold_sec: 0.4             # 마커 잠깐 놓쳐도 이 시간 present 유지(흔들림→튐 방지)
+
+    # --- YOLO 미션신호(신호등 초록/빨강 + 체커보드). 클래스: 0 checker/1 green/2 red/3 stop_line ---
+    # 판단 WAIT_START_SIGNAL이 traffic_light=GREEN을 보면 출발. 오출발 방지로 초록을
+    # tl_green_confirm_sec 동안 연속 확정해야 GREEN 발행. 실패해도 aruco는 계속 동작.
+    yolo_enable: true               # false면 신호등/체커보드 stub(aruco만). CPU 아끼려면 false.
+    yolo_model_path: best_ncnn_model  # models/ 하위(ncnn 디렉토리 또는 best.pt)
+    yolo_conf: 0.35                 # 박스 인정 최소 신뢰도. 오검 나면 ↑, 놓치면 ↓
+    yolo_imgsz: 320                 # 추론 입력 크기(테스트 노드와 동일)
+    yolo_max_infer_hz: 6.0          # 추론 상한 fps(카메라 26fps 다 안 돌림→CPU 경합↓)
+    yolo_cv_threads: 1              # OpenCV 스레드 상한
+    yolo_torch_threads: 2           # torch 스레드 상한
+    yolo_stale_sec: 1.0             # 이 시간 내 추론 없으면 신호 NONE으로 폴백
+    tl_prefer_red: true             # 초록·빨강 동시 검출 시 RED(출발 안전측)
+    tl_green_confirm_sec: 0.5       # 초록 연속 확정 시간[s]. 오출발 잦으면 ↑, 출발 굼뜨면 ↓
+    checker_hold_sec: 0.3           # 체커보드 잠깐 놓쳐도 이 시간 유지

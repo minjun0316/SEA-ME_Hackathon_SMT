@@ -33,10 +33,12 @@ OPENCV_DEBUG_MODE : true
 # 여기에 한 줄 추가하면 웹 UI 디버그 패널이 자동 생성된다(재빌드 없이 노드 재시작만).
 # OPENCV_DEBUG_MODE 가 true 여야 그리드가 보인다. DEBUG_CHANNELS 를 지우면
 # 기존 opencv 3종(grayscale/blur/edge)으로 자동 폴백한다.
+#
+# 채널 수 = 브라우저가 동시에 당기는 영상 스트림 수. 메인(camera)+디버그 합이 브라우저
+# 동시연결 한계(~6)를 넘으면 뒤쪽 패널이 굶어 안 뜬다(07-10). 그래서 라이브로 꼭 보는
+# 것만 남긴다: Lane / Lane Edge / YOLO (+메인=4스트림). grayscale/blur/edge는 필요 시
+# 아래 한 줄씩 되살리면 됨(발행은 계속되므로 웹 표시 여부만 바뀜).
 DEBUG_CHANNELS:
-  - {label: "Grayscale", topic: "/opencv/image/grayscale"}
-  - {label: "Blur",      topic: "/opencv/image/blur"}
-  - {label: "Edge",      topic: "/opencv/image/edge"}
-  - {label: "YOLO",      topic: "/perception/test/yolo_detect/debug/compressed"}
   - {label: "Lane",      topic: "/perception/lane/debug/compressed"}
   - {label: "Lane Edge", topic: "/perception/lane/debug/edges/compressed"}
+  - {label: "YOLO",      topic: "/perception/test/yolo_detect/debug/compressed"}

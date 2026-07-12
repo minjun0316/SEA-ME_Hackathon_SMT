@@ -45,7 +45,7 @@ lateral_pd:
   k_deriv: 0.0                 # d(offset)/dt 댐핑(선택). 근거리 노이즈 커서 기본 0. 저주파 꿀렁 남으면 소량(0.05) 시도.
   deriv_smoothing: 0.3         # 미분 EMA(노이즈 저역통과). k_deriv 쓸 때만 의미.
   max_offset: 0.5             # offset 클램프[m]. 오검출 스파이크→과조향 방지.
-  steering_smoothing: 0.3      # 출력 β: out=(1-β)old+β new. 작을수록 부드럽(지연↑). 떨림 남으면 ↓(0.25), 굼뜨면 ↑.
+  steering_smoothing: 0.25     # 출력 β: out=(1-β)old+β new. 작을수록 부드럽(지연↑). 떨림 잡으려 0.3→0.25(07-10). 더 떨면 ↓, 굼뜨면 ↑.
 
 battery:
   enabled: false                # 배터리 토픽(/battery_status) 연동 시 true.

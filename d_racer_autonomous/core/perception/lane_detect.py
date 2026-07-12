@@ -39,20 +39,40 @@ class LaneCalib:
     # --- HLS 색 임계 (H, L, S) ---
     yellow_lo: Tuple[int, int, int] = (15, 80, 70)
     yellow_hi: Tuple[int, int, int] = (35, 255, 255)
-    white_lo: Tuple[int, int, int] = (0, 200, 0)   ##< white_adaptive=False 폴백 하한
-    white_hi: Tuple[int, int, int] = (180, 255, 70)  ##< 〃 상한
-    # 흰색 마스크: 적응형 밝기 임계(조명 불변). 흰 선은 항상 프레임 내 최고 밝기이므로
-    # L 하한을 프레임 밝기(상위 퍼센타일)에 상대적으로 잡는다. 고정 임계(white_lo/hi)는
-    # 밝으면 회색 바닥을 흰색으로 오검(실측 회색타일 L=218 > 하한 200)하고, 어두우면
-    # 흰 선을 통째 놓쳐(저조도 흰선 L≈152 < 200) 깜빡였다. 실측 BEV서 조금만 어두워도
-    # 고정은 0px, 적응은 ~2060px로 안정. → 두 증상(회색오검·깜빡임)을 동시 해결.
-    white_adaptive: bool = True         ##< True=적응형, False=고정(white_lo/hi)
-    white_adaptive_k: float = 0.80      ##< L 하한 = k × (L 상위 white_pct 퍼센타일)
+    white_lo: Tuple[int, int, int] = (0, 160, 0)   ##< white_adaptive=False 폴백 하한
+    white_hi: Tuple[int, int, int] = (180, 255, 100)  ##< 〃 상한
+    # 흰색 마스크 방식. 기본 False = 원본 C++ 고정 임계(white_lo/hi = inRange((0,200,0),
+    # (180,255,70)))를 그대로 사용 — 밝은 흰색은 L≥200이면 무조건 통과(원본 검증된 로직).
+    # True = 적응형(L 하한 = k×L상위퍼센타일, 조명 불변). 적응형은 회색오검·저조도 깜빡임을
+    # 없애지만, 프레임에 흰 선보다 더 밝은 것(tops글레어)이 있으면 기준이 올라가 '밝은 흰색을
+    # 놓치는' 부작용이 있어 기본은 원본 고정으로 둔다. 조명 변동이 심하면 True로 실험.
+    white_adaptive: bool = False        ##< False=원본 C++ 고정(white_lo/hi), True=적응형
+    # L 하한80 k × (L 상위 white_pct 퍼센타일). 낮출수록 완화(더 어두운 흰색까지 통과).
+    # 0.80→0.72(07-10): 흰 선보다 더 밝은 것(글레어/반사)이 프레임에 있으면 p99가 그쪽으로
+    # 올라가 L_lo가 높아지고 정작 흰 선이 그 밑으로 빠져 '밝은 흰색이 안 잡히던' 문제 완화.
+    # k=흰 선이 최고밝기의 이 비율 이상이면 통과 → 0.72면 72%까지 허용(글레어 여유↑).
+    # 여전히 밝은 흰색을 놓치면 0.68→0.65로, 회색 바닥까지 잡혀 노이즈 생기면 0.75~0.78로.
+    white_adaptive_k: float = 0.65
     white_pct: float = 99.0             ##< 밝기 기준 퍼센타일(흰 선=최고밝기 추종)
     white_l_floor: int = 90             ##< L 하한 최소(칠흑 프레임서 노이즈 폭주 방지)
     white_l_cap: int = 250              ##< L 하한 최대(과도한 상승 방지)
-    white_s_hi: int = 65                ##< 흰색 최대 채도 S(무채색만 통과, 유채색 배제)
-    yellow_pixel_threshold: int = 30   ##< 노랑 픽셀 이 이상이면 노랑 우세(노랑만 추종)
+    white_s_hi: int = 75               ##< 흰색 최대 채도 S(무채색만 통과, 유채색 배제)
+    yellow_pixel_threshold: int = 30   ##< 노랑 픽셀 이 이상이면 노랑 우세 후보(절대 하한)
+    # 노랑 '우세' 판정에 절대 픽셀수만 쓰면, 흰 차선의 warm-tint 조각(수백 px)이
+    # 임계(30)를 넘겨 '노랑 우세'로 오판→흰 차선을 통째로 버린다(=흰선 인식 실패,
+    # edges 뚝뚝 끊김). 그래서 상대 조건을 추가: 노랑이 흰색의 이 비율 이상일 때만
+    # 노랑-only. 1.0=노랑이 흰색보다 많아야 우세(실제 노란 차선이면 성립, 흰선 조각은
+    # 미달→노랑∪흰 유지). 노란 차선을 자꾸 놓치면 ↓(0.6), 흰선이 노랑에 밀리면 ↑.
+    yellow_over_white_ratio: float = 1.0
+
+    # --- 에지(Canny) 입력/임계 ---
+    # 원래는 (마스킹 BGR→gray→blur→Canny). 마스크가 이미 이진 차선영역이라, blur한
+    # gray 대신 '정리한 마스크'에 Canny를 걸면 차선 윤곽이 연속·깨끗해진다(끊김↓).
+    edge_from_mask: bool = True        ##< True=정리한 lane_mask에 Canny(권장), False=옛 gray/blur
+    edge_close_ksize: int = 3          ##< MORPH_CLOSE/dilate 커널 크기(작은 구멍 메우기)
+    edge_dilate_iter: int = 1          ##< dilate 반복(차선 두껍게→창별 minpix 안정). 0=off
+    canny_lo: int = 30                 ##< Canny 하한(옛 50→30, 흰선 민감도↑). 노이즈면 ↑
+    canny_hi: int = 90                 ##< Canny 상한(옛 150→90). lo의 ~3배 유지 권장
 
     # --- 슬라이딩 윈도우 ---
     nwindows: int = 9
@@ -67,6 +87,17 @@ class LaneCalib:
     # peak 열의 에지량이 (스캔행수×255×이 값) 미만이면 그쪽 차선이 안 보이는 것으로
     # 보고 base를 화면 25%/75% 기본위치로 고정한다(argmax가 0/노이즈를 잡는 것 방지).
     seed_min_fill: float = 0.05
+    # lost 재획득 시 argmax peak를 직전 seed와 섞는 히스토그램 가중치(0~1).
+    # base = prev*(1-b) + peak*b. 0.5=반반(기존 하드코딩). 1.0=peak만, 0.0=prev만.
+    seed_reacquire_blend: float = 0.5
+    # lock(추종 중) 상태에서도 매 프레임 히스토그램 peak를 seed에 소폭 섞는 가중치(0~1).
+    # 0.0=off(순수 search-around-poly, 기존 동작). 0.2면 seed=prev*0.8 + peak*0.2.
+    # 단순 EMA가 아니라: prev seed ±seed_hist_band_px 밴드 안에서만 peak를 찾고
+    # (윈도우 탐색 → 반대 차선/노이즈로의 점프 배제), 그 밴드 에지량이 seed_min_fill
+    # 이상일 때만 섞는다(garbage 프레임은 유지). 커브에서 lock seed가 뒤처지는 지연을
+    # 줄이는 용도. 켜면 지연↓·추종성↑, 과하면 노이즈로 seed가 떨릴 수 있어 0.1~0.3 권장.
+    seed_lock_hist_blend: float = 0.0
+    seed_hist_band_px: float = 60.0     ##< lock 블렌딩 시 prev 주변 peak 탐색 밴드(±px)
     # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
     # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
     lane_width_px: float = 180.0
@@ -149,14 +180,13 @@ class LaneDetector:
         res.yellow_confidence = min(1.0, yellow_px / c.color_conf_pixels)
         res.white_confidence = min(1.0, white_px / c.color_conf_pixels)
 
-        # 노랑 우세면 노랑만, 아니면 노랑∪흰
-        lane_mask = yellow if yellow_px > c.yellow_pixel_threshold \
-            else cv2.bitwise_or(yellow, white)
+        # 노랑 '우세'면 노랑만, 아니면 노랑∪흰. 우세 = 절대 하한 초과 AND 흰색 대비
+        # 비율 조건(흰선 조각이 임계만 넘겨 흰 차선을 버리는 오판 방지). @see LaneCalib.
+        yellow_dominant = (yellow_px > c.yellow_pixel_threshold
+                           and yellow_px >= white_px * c.yellow_over_white_ratio)
+        lane_mask = yellow if yellow_dominant else cv2.bitwise_or(yellow, white)
 
-        masked = cv2.bitwise_and(bev, bev, mask=lane_mask)
-        gray = cv2.cvtColor(masked, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 50, 150)
+        edges = self._edges_from_mask(bev, lane_mask)
 
         debug = bev.copy() if want_debug else None
 
@@ -230,6 +260,31 @@ class LaneDetector:
         return ((L >= l_lo) & (S <= c.white_s_hi)).astype(np.uint8) * 255
 
     # ------------------------------------------------------------------ #
+    def _edges_from_mask(self, bev: np.ndarray, lane_mask: np.ndarray) -> np.ndarray:
+        """@brief 차선 마스크 → Canny 에지.
+
+        @param bev       BEV 이미지(edge_from_mask=False 폴백 경로에서만 사용).
+        @param lane_mask 노랑/흰 차선 이진 마스크(uint8, 차선=255).
+        @return uint8 에지 이미지.
+
+        @details 기본(edge_from_mask): 마스크에 MORPH_CLOSE로 작은 구멍을 메우고
+        dilate로 살짝 두껍게 한 뒤 Canny → 차선 윤곽이 연속·깨끗해져 슬라이딩 윈도우
+        창별 minpix가 안정된다(원인: 얇은 마스크+높은 Canny 임계면 윤곽이 끊겨
+        '인식했다 말았다'). edge_from_mask=False면 옛 경로(BGR 마스킹→gray→blur→Canny).
+        """
+        c = self.calib
+        if c.edge_from_mask:
+            k = np.ones((max(1, c.edge_close_ksize),) * 2, np.uint8)
+            m = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, k, iterations=1)
+            if c.edge_dilate_iter > 0:
+                m = cv2.dilate(m, k, iterations=c.edge_dilate_iter)
+            return cv2.Canny(m, c.canny_lo, c.canny_hi)
+        masked = cv2.bitwise_and(bev, bev, mask=lane_mask)
+        gray = cv2.cvtColor(masked, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        return cv2.Canny(blur, c.canny_lo, c.canny_hi)
+
+    # ------------------------------------------------------------------ #
     def _to_bev(self, frame: np.ndarray) -> np.ndarray:
         """@brief 원근변환(BEV). 이미지 크기 바뀌면 행렬 재계산."""
         h, w = frame.shape[:2]
@@ -270,17 +325,47 @@ class LaneDetector:
         min_mass = 255.0 * n_rows * c.seed_min_fill      # 실제 차선 인정 최소 에지량
         left_hist = hist[:midpoint]
         right_hist = hist[midpoint:]
+        b = c.seed_reacquire_blend                        # 히스토그램 가중치(prev와 블렌딩)
         if left_hist.size and float(left_hist.max()) >= min_mass:
             cur_left = int(np.argmax(left_hist))
-            leftx = int(self._last_leftx * 0.5 + cur_left * 0.5)
+            leftx = int(self._last_leftx * (1.0 - b) + cur_left * b)
         else:
             leftx = int(w * 0.25)                         # 좌측 차선 미검출 → 기본 25%
         if right_hist.size and float(right_hist.max()) >= min_mass:
             cur_right = int(np.argmax(right_hist) + midpoint)
-            rightx = int(self._last_rightx * 0.5 + cur_right * 0.5)
+            rightx = int(self._last_rightx * (1.0 - b) + cur_right * b)
         else:
             rightx = int(w * 0.75)                        # 우측 차선 미검출 → 기본 75%
         return leftx, rightx
+
+    def _blend_lock_seed(self, prev_x: float, hist: np.ndarray, w: int, h: int) -> int:
+        """@brief lock 상태 seed를 히스토그램 peak 쪽으로 소폭 당긴다(gated+windowed).
+
+        @param prev_x 직전 seed x(=lock 시작점).
+        @param hist   하단 영역 열별 에지 합(길이 w).
+        @param w,h    프레임 크기[px].
+        @return 블렌딩된 seed x.
+
+        @details prev_x ±seed_hist_band_px 밴드 **안에서만** peak를 찾는다(윈도우
+        탐색 → 반대 차선/노이즈로 seed가 점프하는 것을 원천 배제). 밴드 내 최대
+        에지량이 seed_min_fill 기준 미만이면 그 프레임엔 신뢰할 peak가 없다고 보고
+        prev_x를 그대로 유지한다(garbage 프레임 미반영). 기준을 넘으면
+        prev*(1-b) + peak*b 로 섞어 커브에서 seed가 뒤처지는 지연만 줄인다.
+        seed_lock_hist_blend=0이면 호출되지 않는다.
+        """
+        c = self.calib
+        n_rows = h - int(h * 0.6)
+        min_mass = 255.0 * n_rows * c.seed_min_fill
+        lo = max(0, int(prev_x - c.seed_hist_band_px))
+        hi = min(w, int(prev_x + c.seed_hist_band_px))
+        if hi - lo < 1:
+            return int(prev_x)
+        band = hist[lo:hi]
+        if float(band.max()) < min_mass:
+            return int(prev_x)                        # 밴드 내 실제 에지 없음 → 유지
+        peak = lo + int(np.argmax(band))
+        b = c.seed_lock_hist_blend
+        return int(prev_x * (1.0 - b) + peak * b)
 
     def _sliding_window(self, edges: np.ndarray, debug):
         """@brief 좌/우 차선 슬라이딩 윈도우. @return (centerline_px[near→far], confidence)."""
@@ -294,6 +379,11 @@ class LaneDetector:
         if self._last_conf >= c.seed_lock_conf:
             leftx = int(self._last_leftx)
             rightx = int(self._last_rightx)
+            if c.seed_lock_hist_blend > 0.0:
+                # 옵션: lock 중에도 히스토그램 peak를 소폭 섞어 커브 지연을 줄인다.
+                hist = np.sum(edges[int(h * 0.6):, :], axis=0)
+                leftx = self._blend_lock_seed(self._last_leftx, hist, w, h)
+                rightx = self._blend_lock_seed(self._last_rightx, hist, w, h)
         else:
             hist = np.sum(edges[int(h * 0.6):, :], axis=0)
             leftx, rightx = self._reacquire_base(hist, w, h)
