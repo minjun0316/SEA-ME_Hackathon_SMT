@@ -27,5 +27,5 @@ mission_cues_node:
     yolo_torch_threads: 2           # torch 스레드 상한
     yolo_stale_sec: 1.0             # 이 시간 내 추론 없으면 신호 NONE으로 폴백
     tl_prefer_red: true             # 초록·빨강 동시 검출 시 RED(출발 안전측)
-    tl_green_confirm_sec: 0.5       # 초록 연속 확정 시간[s]. 오출발 잦으면 ↑, 출발 굼뜨면 ↓
+    tl_green_confirm_sec: 0.1       # [실험 07-13] 로직 검증용 0.5→0.1(짧은 초록에도 즉시 GREEN→상태전환). 검증 끝나면 0.5로 복귀. 오출발 잦으면 ↑, 출발 굼뜨면 ↓
     checker_hold_sec: 0.3           # 체커보드 잠깐 놓쳐도 이 시간 유지

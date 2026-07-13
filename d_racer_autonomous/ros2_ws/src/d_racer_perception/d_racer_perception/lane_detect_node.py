@@ -92,12 +92,13 @@ class LaneDetectNode(Node):
         self.declare_parameter('canny_lo', d.canny_lo)
         self.declare_parameter('canny_hi', d.canny_hi)
         self.declare_parameter('stopline_len_threshold', d.stopline_len_threshold)
-        # 정지선(행별 색 커버리지 밴드): 색(yellow|white|both)/ROI 높이/행 커버리지/최소 행수.
+        # 정지선(행별 색 커버리지 밴드): 색(yellow|white|both)/ROI 높이/행 커버리지/가로폭·세로두께 창.
         self.declare_parameter('stopline_color', d.stopline_color)
         self.declare_parameter('stopline_roi_h', d.stopline_roi_h)
         self.declare_parameter('stopline_row_coverage', d.stopline_row_coverage)
         self.declare_parameter('stopline_max_width_m', d.stopline_max_width_m)
-        self.declare_parameter('stopline_min_rows', d.stopline_min_rows)
+        self.declare_parameter('stopline_min_thickness_m', d.stopline_min_thickness_m)
+        self.declare_parameter('stopline_max_thickness_m', d.stopline_max_thickness_m)
         self.declare_parameter('lane_width_px', d.lane_width_px)
         self.declare_parameter('seed_reacquire_blend', d.seed_reacquire_blend)
         self.declare_parameter('seed_lock_hist_blend', d.seed_lock_hist_blend)
@@ -137,7 +138,8 @@ class LaneDetectNode(Node):
             stopline_roi_h=int(self.get_parameter('stopline_roi_h').value),
             stopline_row_coverage=float(self.get_parameter('stopline_row_coverage').value),
             stopline_max_width_m=float(self.get_parameter('stopline_max_width_m').value),
-            stopline_min_rows=int(self.get_parameter('stopline_min_rows').value),
+            stopline_min_thickness_m=float(self.get_parameter('stopline_min_thickness_m').value),
+            stopline_max_thickness_m=float(self.get_parameter('stopline_max_thickness_m').value),
             lane_width_px=float(self.get_parameter('lane_width_px').value),
             seed_reacquire_blend=float(self.get_parameter('seed_reacquire_blend').value),
             seed_lock_hist_blend=float(self.get_parameter('seed_lock_hist_blend').value),
@@ -211,8 +213,12 @@ class LaneDetectNode(Node):
             self.get_logger().warn(
                 f'stopline 근접(미검출): cov={res.stopline_cov_max:.2f}/'
                 f'{self.get_parameter("stopline_row_coverage").value:.2f} '
-                f'rows={res.stopline_n_band}/{self.get_parameter("stopline_min_rows").value}')
+                f'thick={res.stopline_n_band}px '
+                f'win={self.get_parameter("stopline_min_thickness_m").value:.2f}~'
+                f'{self.get_parameter("stopline_max_thickness_m").value:.2f}m')
         self._prev_stopline = bool(s.stop_line)
+        # 주의: LaneStatus msg엔 yellow/white_detected 필드가 없다(슬림화됨). 여기서
+        # s.yellow_detected 등을 set하면 AttributeError로 노드가 죽는다 → set 금지.
         self.pub_status.publish(s)
 
         # --- lane_path (near→far, base_link 미터) ---
@@ -253,7 +259,7 @@ class LaneDetectNode(Node):
                 f'pts={res.num_points} stop={res.stop_line} '
                 f'stopdist={res.stop_line_dist:.2f}m '
                 f'slcov={res.stopline_cov_max:.2f}/{self.get_parameter("stopline_row_coverage").value:.2f} '
-                f'slrows={res.stopline_n_band}/{self.get_parameter("stopline_min_rows").value}')
+                f'slthick={res.stopline_n_band}px')
 
     def _publish_jpeg(self, pub, img, stamp):
         """@brief numpy 이미지(BGR 또는 그레이) → JPEG CompressedImage 발행."""

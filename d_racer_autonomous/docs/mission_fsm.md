@@ -1,6 +1,7 @@
-# D-Racer 미션 상태기계 (5-state)
+# D-Racer 미션 상태기계 (6-state)
 
-> 작성 2026-07-05, 개정 2026-07-13(로터리 ROI 방식 폐기 → 제어단 고정조향 기동으로 전환).
+> 작성 2026-07-05, 개정 2026-07-13(로터리 ROI 방식 폐기 → 제어단 고정조향 기동으로
+> 전환; 지름길 진입은 인지 on_yellow 래치 → SHORTCUT 페이즈).
 > 대회 미션을 **상위 미션 SM(MissionSequencer)** 로 정리한다. 구현: `core/planning/mission.py`.
 > 관련: 계약 `interfaces.md`, 합의 `perception_agreement.md`, 진행 `../PROGRESS.md`.
 
@@ -11,12 +12,14 @@
 전체 외곽을 도는 게 아니라, 하단 직선에서 **중앙 원형 로터리로 올라가는 지름길**을 쓴다.
 
 ```
-출발(체커보드) → 차선 주행 → 로터리(정지선 카운트로 회전/탈출) → 외곽 주행
-  → 빨강 장애물 구간(아루코) → 도착(체커보드) 정지
+출발(체커보드) → 흰 차선 주행 → 지름길(노랑 차선 진입) → 로터리(정지선 카운트로 회전/탈출)
+  → 외곽 흰 주행 → 빨강 장애물 구간(아루코) → 도착(체커보드) 정지
 ```
 
+- **지름길 = 노랑 차선**(왼 실선+오른 점선). 인지가 노랑을 안정 검출하면 노랑모드로
+  전환(흰 직진선 무시)하고 `on_yellow`를 발행 → 미션 SHORTCUT.
 - **로터리 회전은 미션 FSM이 아니라 제어단이 처리**(§2). 미션 FSM은 로터리를 별도 페이즈로
-  다루지 않고 일반 차선 주행(LANE_FOLLOW)으로 통과한다.
+  다루지 않고 SHORTCUT(노랑 주행)으로 통과한다.
 - **분담**: 신호등·체커보드=YOLO, 차선/정지선/빨강=OpenCV, 아루코=cv2.aruco.
 
 ---
@@ -45,12 +48,15 @@
 
 ---
 
-## 4. 5-state 상태 다이어그램
+## 4. 6-state 상태 다이어그램
 
 ```
  WAIT_START_SIGNAL     (정지)             ── 초록불(YOLO) ──▶ LANE_FOLLOW
- LANE_FOLLOW           (흰,LOWER)         ── 빨강 구역 ──▶ DYNAMIC_OBSTACLE_ZONE
-      │  (로터리 구간 포함 — 회전은 controller StoplineManeuver 몫, FSM엔 투명)
+ LANE_FOLLOW           (흰,LOWER)         ── on_yellow(인지 노랑 래치) ──▶ SHORTCUT
+      │                                   ── 빨강 구역 ──▶ DYNAMIC_OBSTACLE_ZONE
+ SHORTCUT              (노랑 추종,감속)    ── on_yellow 해제 ──▶ LANE_FOLLOW
+      │  (지름길 노랑 2줄 추종은 인지가 노랑모드로 자동 수행. 로터리 회전은
+      │   controller StoplineManeuver 몫, FSM엔 투명)
  DYNAMIC_OBSTACLE_ZONE (흰,LOWER_ARUCO,감속)
       │  아루코 보임 → STOP,  안 보임 → 주행
       └─ 빨강 벗어남 ──▶ FINISH_APPROACH
@@ -58,8 +64,12 @@
  FINISH_STOP           (정지, 종료)
 ```
 
-- 값(IntEnum): WAIT_START_SIGNAL=0, LANE_FOLLOW=1, DYNAMIC_OBSTACLE_ZONE=2,
-  FINISH_APPROACH=3, FINISH_STOP=4.
+- 값(IntEnum): WAIT_START_SIGNAL=0, LANE_FOLLOW=1, SHORTCUT=2,
+  DYNAMIC_OBSTACLE_ZONE=3, FINISH_APPROACH=4, FINISH_STOP=5.
+- **지름길 진입**: 인지가 노랑 차선(왼 실선+오른 점선)을 안정 검출하면 `on_yellow`를
+  래치(hysteresis)로 발행 → 미션이 SHORTCUT으로 전환. 노랑선 추종 자체는 인지가
+  노랑모드(노랑만 마스킹)로 자동 수행하므로 미션은 감속 게이트만 얹는다. 노랑이
+  사라지면(지름길·로터리 통과) 래치 해제 → LANE_FOLLOW 복귀.
 - 정지선은 미션 FSM 전이에 쓰지 않는다(제어단 StoplineManeuver 전용).
 
 ---
@@ -69,11 +79,13 @@
 | 상태 | follow_color | roi_mode | turn_bias |
 |------|:---:|:---:|:---:|
 | LANE_FOLLOW | WHITE | LOWER | NONE |
+| SHORTCUT | WHITE | LOWER | NONE |
 | DYNAMIC_OBSTACLE_ZONE | WHITE | LOWER_ARUCO | NONE |
 | FINISH_APPROACH | WHITE | LOWER | NONE |
 
-(WAIT_START_SIGNAL·FINISH_STOP = 정지. follow_color는 항상 WHITE, turn_bias는 항상 NONE
-— 로터리 노랑 추종·좌/우 bias를 쓰던 ROI 방식이 폐기됐기 때문.)
+(WAIT_START_SIGNAL·FINISH_STOP = 정지. follow_color/turn_bias는 항상 WHITE/NONE —
+인지가 LaneMode를 구독하지 않으므로 이 지시들은 실제 동작에 쓰이지 않는다. 지름길
+노랑 추종은 미션 지시가 아니라 **인지의 on_yellow 자율 래치**로 이뤄진다.)
 
 ---
 

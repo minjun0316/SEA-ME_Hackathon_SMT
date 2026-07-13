@@ -29,6 +29,7 @@
 
 | 신호 | 어디(메시지) | 누가 | 어느 전환/동작 |
 |---|---|---|---|
+| `on_yellow` | LaneStatus | OpenCV(인지 래치) | **LANE_FOLLOW→SHORTCUT**(지름길 노랑 진입). 인지가 노랑 안정검출로 노랑모드 래치→발행. |
 | `stop_line` | LaneStatus | OpenCV | **로터리 정지선 카운트 — 제어단 StoplineManeuver가 셈**(고정조향 기동 트리거). |
 | `traffic_light`(NONE/RED/GREEN) | MissionCues | YOLO | WAIT_START_SIGNAL→LANE_FOLLOW(초록) |
 | `checkerboard_detected` | MissionCues | YOLO | FINISH_APPROACH→FINISH_STOP |

@@ -10,5 +10,7 @@ float32 lateral_offset    # 차량중심 대비 차선중심 횡오차 [m], +좌
 float32 heading_error     # 차량 전방 대비 차선 접선 오차 [rad]
 bool    stop_line         # 정지선 검출 여부(제어단 StoplineManeuver가 카운트)
 float32 stop_line_dist    # 정지선까지 거리 [m] (미검출 시 -1.0)
-# [2026-07-13] 색 검출 필드(yellow/white_detected+confidence) 제거 — 로터리 ROI 방식
-# 폐기로 소비처 없음. 노랑/흰 마스크 자체는 인지 내부 차선검출에 계속 사용.
+# [2026-07-13] 지름길 노랑 래치 신호. 인지가 노랑 차선을 안정 검출해 노랑모드로
+# 전환하면 true(점선 끊김엔 hysteresis 유지). 미션이 SHORTCUT 전환에 소비한다.
+# (raw yellow/white_detected 색 보고는 소비처 없어 제거됨 — 이건 래치된 판정 신호.)
+bool    on_yellow         # 노랑모드 래치(지름길 노랑 차선 추종 중)
