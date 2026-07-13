@@ -1,11 +1,11 @@
 # D-Racer 자율주행 — 진행 상황 / 다음 할 일
 
-> 마지막 작업일: 2026-07-08. 이 문서는 매 세션 끝에 갱신한다.
+> 마지막 작업일: 2026-07-13. 이 문서는 매 세션 끝에 갱신한다.
 >
 > **작업 환경 변경(07-03)**: 이제 보드에서 직접 편집·빌드·커밋한다. 워크스페이스=팀레포 `~/SEA-ME_Hackathon_SMT`(= colcon ws, `build/ install/ src/` 포함). 옛 `~/D-Racer-Kit`는 통합되어 없어짐. scp 왕복 불필요.
 
 ## 한 줄 요약
-ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료, Stage 6-b controller_node 작성·검증 완료. 판단 2계층(아래층 반응형 decision + 위층 미션 MissionSequencer) 순수 로직 완성. `racer_msgs` 로터리 12-state로 확장(MissionCues/LaneMode). ROS 래퍼 3종(decision/controller-topic/mission) + **차선 인지 노드(`lane_detect_node`, cpp 파이썬 포팅) 작성, colcon 빌드 OK·테스트 52개 통과.** **차선추종 폐루프 launch(`lane_follow.launch.py`, YOLO 제외) 완성.** 다음은 **실차 카메라 차선추종 테스트 + 픽셀→미터 캘리브**.
+ROS-free 코어로 Stage 1~3(시뮬) 완성. 실차 브링업·캘리브 완료, Stage 6-b controller_node 작성·검증 완료. 판단 2계층(아래층 반응형 decision + 위층 미션 MissionSequencer) 순수 로직 완성. **미션 FSM은 5-state로 정리(07-13): 로터리 회전은 제어단 고정조향 StoplineManeuver가 담당, ROI 방식 폐기.** `racer_msgs`(MissionCues/LaneMode) 확장. ROS 래퍼 3종(decision/controller-topic/mission) + **차선 인지 노드(`lane_detect_node`, cpp 파이썬 포팅) 작성, colcon 빌드 OK·테스트 52개 통과.** **차선추종 폐루프 launch(`lane_follow.launch.py`, YOLO 제외) 완성.** 다음은 **실차 카메라 차선추종 테스트 + 픽셀→미터 캘리브**.
 
 ---
 
@@ -23,6 +23,14 @@ racer-run enable_drive:=True drive_throttle:=0.16 throttle_limit:=0.20
 - ⚠️ **과하게 꺾임(오버슈트)** → 복원 차선폭(`lane.yaml lane_width_px`) 학습값이 큼 or 피팅 과함 → `path_smooth_order` 또는 gain 낮춤.
 - ⚠️ **여전히 덜 꺾임/못 완주** → (a) 조향 포화 의심(`max_steer_deg=15.5°`(07-09 원주행 역산 확정)→R_min≈0.63m, 트랙 커브가 더 급하면 물리한계), (b) 우측커브면 트림 비대칭(-0.776 조기포화) 확인. `/control` steering 값 캡처해 포화 여부부터 볼 것.
 - 🌀 **직선 휘청** → `ld_min` ↑(0.3→0.4) 또는 `steering_smoothing` ↓.
+
+### ✅ 완료(07-13): 판단 정리 — 로터리 ROI 방식 폐기, 미션 FSM 12→5-state
+- **결정**: 로터리 회전은 **제어단 고정조향 기동(`StoplineManeuver`, controller_node)** 만 쓴다. 정지선 카운트 → `roi_mode` 좌/우 전환 + `turn_bias`로 차선추종하던 **ROI 방식은 폐기**(원거리 BEV 노이즈·색 구분 문제).
+- **미션 FSM 축소(`core/planning/mission.py`)**: 12-state → **5-state** `WAIT_START_SIGNAL → LANE_FOLLOW(로터리 구간 포함, 회전은 controller 몫) → DYNAMIC_OBSTACLE_ZONE → FINISH_APPROACH → FINISH_STOP`. 신호등 출발·아루코 정지·체커보드 도착은 유지.
+- **제거**: 로터리 6페이즈, `_count_stop_lines`, turn_hint 좌/우·roi RIGHT/LEFT, 노랑/흰 검출 전이, `MissionObservation.yellow/white_detected`, `MissionConfig` 로터리 파라미터 9개(→`slow_speed_scale`만) + `continue_side/exit_side`. `config/mission.yaml`·`mission_node.py`·`test_mission.py` 동반 정리.
+- **손 안 댐(계약 경계)**: `decision.py` 반응형 SM·enum(TurnHint/RoiMode/LaneColor), `racer_msgs`(LaneMode/LaneStatus의 RIGHT/LEFT·yellow/white 필드). msg엔 남기고 판단이 발행만 안 함.
+- **문서 갱신**: `mission_fsm.md`(5-state 재작성), `perception_agreement.md`·`interfaces.md`(로터리 ROI 폐기·필드 미사용 명시), `CLAUDE.md`. ⚠️ perception_agreement/interfaces는 **인지 계약 변경**이라 팀 공지 필요(`[planning]`+`[iface]`).
+- **검증**: pytest 85개 통과. ⚠️ 미커밋. ⚠️ 보드 `colcon build`+노드 재시작 필요.
 
 ### ✅ 완료(07-08): 차선추종 커브 대응 대수술 (인지) + 제어 튜닝
 **문제 흐름**: 저속주행은 되는데 ①커브 추종 안 됨 → ②주황 얼룩테이프를 차선으로 오검 → ③커브에서 바깥 주황선이 좁은 화각(320×160) 밖으로 나가 **한쪽만 인식** → ④한쪽만 볼 때 중심선이 커브를 못 담음(head~0, 곧 직진 판단 → 완주 못함).

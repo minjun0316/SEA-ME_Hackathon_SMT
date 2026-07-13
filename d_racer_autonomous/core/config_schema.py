@@ -184,51 +184,17 @@ class DecisionConfig:
 class MissionConfig:
     """@brief 상위 미션 시퀀스(MissionSequencer) 파라미터.
 
-    @details 12-state 미션 SM(WAIT_START_SIGNAL~FINISH_STOP)의 타이머/카운트
-    임계값과 로터리 갈림길 방향. 시간·방향은 트랙마다 달라 전부 여기(YAML)에 둔다.
-    한 바퀴 판단은 yaw 누적각이 아니라 **정지선 검출 횟수**만 사용한다.
-    자세한 시퀀스는 docs/mission_fsm.md 참조.
+    @details 미션 SM(WAIT_START_SIGNAL~FINISH_STOP)의 구간별 배율. 로터리 회전은
+    제어단 StoplineManeuver가 담당하므로 로터리 타이머/방향은 여기 없다(그쪽 config는
+    StoplineManeuverConfig). 자세한 시퀀스는 docs/mission_fsm.md 참조.
     """
 
-    # --- 로터리 갈림길 방향 (스펙: 첫 정지선=오른쪽 계속, 둘째=왼쪽 탈출) ---
-    roundabout_continue_side: str = "RIGHT"  ##< 1번째 정지선 후 계속 도는 방향(오른쪽 원형).
-    roundabout_exit_side: str = "LEFT"       ##< 2번째 정지선 후 탈출 방향(왼쪽 출구).
-    # --- 정지선 카운트 ---
-    stopline_debounce_sec: float = 1.5       ##< 정지선 카운트 사이 최소 간격[s](중복 방지).
-    stopline_ignore_after_entry_sec: float = 1.5  ##< ROUNDABOUT_ENTRY 진입무시 시간[s].
-    # --- 상태 지속 타이머 ---
-    shortcut_approach_sec: float = 1.0       ##< SHORTCUT_APPROACH 후 ROUNDABOUT_ENTRY까지[s].
-    continue_right_sec: float = 1.2          ##< ROUNDABOUT_CONTINUE_RIGHT 강제 지속[s].
-    exit_left_sec: float = 1.2               ##< ROUNDABOUT_EXIT_LEFT 최소 지속[s] 후 커넥터 판정.
-    white_stable_sec: float = 0.5            ##< EXIT_CONNECTOR→OUTER: 흰색 연속 검출 요구[s].
     # --- 구간별 배율 ---
-    slow_speed_scale: float = 0.5            ##< 접근/로터리/장애물/탈출 속도 상한 배율.
-    roundabout_lookahead_scale: float = 0.7  ##< 로터리 구간 lookahead 배율(짧게).
-
-    def _side(self, value: str) -> "TurnHint":
-        """@brief 'LEFT'/'RIGHT' 문자열을 TurnHint로 변환."""
-        from .planning.decision import TurnHint
-        key = str(value).strip().upper()
-        if key == "LEFT":
-            return TurnHint.LEFT
-        if key == "RIGHT":
-            return TurnHint.RIGHT
-        raise ValueError(f"MissionConfig: side must be LEFT/RIGHT, got {value!r}")
-
-    def continue_side(self) -> "TurnHint":
-        """@brief 1번째 정지선 후 계속 도는 방향 bias(오른쪽)."""
-        return self._side(self.roundabout_continue_side)
-
-    def exit_side(self) -> "TurnHint":
-        """@brief 2번째 정지선 후 탈출 방향 bias(왼쪽)."""
-        return self._side(self.roundabout_exit_side)
+    slow_speed_scale: float = 0.5            ##< 장애물 구역 등 감속 구간 속도 상한 배율.
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MissionConfig":
-        cfg = cls(**_filter_known(cls, data or {}))
-        cfg.continue_side()  # 값 검증(오타 즉시 발견).
-        cfg.exit_side()
-        return cfg
+        return cls(**_filter_known(cls, data or {}))
 
 
 @dataclass

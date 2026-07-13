@@ -9,6 +9,11 @@
 판단은 상태에 맞는 **지시(follow_color/roi_mode/turn_bias)** 만 주고, 인지가 그대로 적용해
 `lane_path`로 되돌린다(왕복 계약).
 
+> **07-13 변경**: 로터리 회전을 **제어단 고정조향 기동**(StoplineManeuver, `controller_node`)으로
+> 전환했다. 그 결과 판단은 더 이상 로터리용 `follow_color=YELLOW`·`roi_mode=RIGHT/LEFT`·`turn_bias`를
+> 내지 않는다(항상 WHITE·FULL/LOWER류·NONE). 아래 필드/값은 msg 계약엔 남아 있으나 현재 미사용이다.
+> 인지팀 영향: 갈림길 좌/우 ROI·bias 추종(D3) 구현은 **불필요**해졌다.
+
 ---
 
 ## A. 인지 → 판단 : 매 프레임 주행 기하 (반드시)
@@ -24,34 +29,33 @@
 
 | 신호 | 어디(메시지) | 누가 | 어느 전환/동작 |
 |---|---|---|---|
-| `yellow_detected` + `yellow_confidence` | LaneStatus | OpenCV | START→SHORTCUT(노랑 등장) |
-| `white_detected` + `white_confidence` | LaneStatus | OpenCV | EXIT_CONNECTOR→OUTER(흰색 안정) |
-| `stop_line` | LaneStatus | OpenCV | 로터리 정지선 카운트(몇 번째인지는 판단이 셈) |
-| `traffic_light`(NONE/RED/GREEN) | MissionCues | YOLO | WAIT→START(초록), FINISH(빨강) |
+| `stop_line` | LaneStatus | OpenCV | **로터리 정지선 카운트 — 제어단 StoplineManeuver가 셈**(고정조향 기동 트리거). |
+| `traffic_light`(NONE/RED/GREEN) | MissionCues | YOLO | WAIT_START_SIGNAL→LANE_FOLLOW(초록) |
 | `checkerboard_detected` | MissionCues | YOLO | FINISH_APPROACH→FINISH_STOP |
-| `red_zone_detected` | MissionCues | OpenCV | OUTER→OBSTACLE(진입), OBSTACLE→FINISH(탈출) |
+| `red_zone_detected` | MissionCues | OpenCV | LANE_FOLLOW→OBSTACLE(진입), OBSTACLE→FINISH(탈출) |
 | `aruco_present` | MissionCues | cv2.aruco(하단 ROI) | OBSTACLE 정지/재출발 |
+| ~~`yellow_detected`/`white_detected`~~ | LaneStatus | OpenCV | **미사용**(로터리 ROI 방식 폐기). msg엔 남아 있음. |
 
 ## C. 판단 → 인지 : 역방향 지시 (★ 새 경로, `/decision/lane_mode`)
 
-| 필드 | 값 | 인지가 할 것 |
-|---|---|---|
-| `follow_color` | WHITE / YELLOW | 그 색 차선을 우선 추종 |
-| `roi_mode` | FULL / LOWER / RIGHT / LEFT / LOWER_ARUCO | 그 ROI로 잘라서 mask·target 추출 |
-| `turn_bias` | NONE / LEFT / RIGHT | target_x에 방향 bias(ROI만으로 부족할 때) |
+| 필드 | 값(계약) | 인지가 할 것 | 현재 판단이 내는 값 |
+|---|---|---|---|
+| `follow_color` | WHITE / YELLOW | 그 색 차선을 우선 추종 | **항상 WHITE** |
+| `roi_mode` | FULL / LOWER / RIGHT / LEFT / LOWER_ARUCO | 그 ROI로 잘라서 mask·target 추출 | FULL / LOWER / LOWER_ARUCO만 |
+| `turn_bias` | NONE / LEFT / RIGHT | target_x에 방향 bias | **항상 NONE** |
+
+> RIGHT/LEFT roi_mode·YELLOW·turn_bias는 로터리 ROI 방식 전용이었고 07-13 폐기됨. 값은 msg에
+> 남아 있으나 미션 FSM이 발행하지 않는다(인지는 FULL/LOWER/LOWER_ARUCO·WHITE·NONE만 받게 됨).
 
 판단이 각 상태에서 내보내는 지시(요약):
 
 | 상태 | follow | roi_mode | turn_bias |
 |---|---|---|---|
-| START_STRAIGHT | WHITE | LOWER | - |
-| SHORTCUT_APPROACH | YELLOW | LOWER | - |
-| ROUNDABOUT_ENTRY/FOLLOW | YELLOW | FULL | - |
-| ROUNDABOUT_CONTINUE_RIGHT | YELLOW | RIGHT | **RIGHT** |
-| ROUNDABOUT_EXIT_LEFT | YELLOW | LEFT | **LEFT** |
-| EXIT_CONNECTOR | YELLOW | LEFT | LEFT |
-| OUTER_LANE_FOLLOW | WHITE | FULL | - |
+| LANE_FOLLOW | WHITE | LOWER | - |
 | DYNAMIC_OBSTACLE_ZONE | WHITE | LOWER_ARUCO | - |
+| FINISH_APPROACH | WHITE | LOWER | - |
+
+(WAIT_START_SIGNAL·FINISH_STOP = 정지.)
 
 ## D. 검출 신뢰도/정의 — 인지팀 확인 (⚠️/🏁)
 
@@ -59,7 +63,7 @@
 |---|------|-----------|
 | D1 | 노랑↔흰 검출 | 두 색을 **동시에 항상** confidence로 보고 가능한가(조명·그림자 견고성). |
 | D2 | 정지선 | "하단 중앙에 넓게 잡히는 수평선"으로 일반 차선과 구분. 폭/신뢰도도 주면 좋음. |
-| D3 | 갈림길 추종(B5) | 판단이 준 roi_mode(RIGHT/LEFT)+turn_bias로 그쪽 갈래를 잡을 수 있는가. |
+| D3 | ~~갈림길 추종~~ | **폐기(07-13)**: 로터리 회전은 제어단 고정조향 기동이 처리 → roi RIGHT/LEFT·bias 추종 불필요. |
 | D4 | 빨강 구역 | 진입/탈출 순간 안정적인가. 검출 시작 거리. |
 | D5 | 아루코 | 바닥 가까이 → **하단 ROI 필수**. 마커 ID·크기, 안정 검출 거리. "일정 프레임" 기준. |
 | D6 | 체커보드 | YOLO 클래스. 출발/도착 같은 무늬지만 판단은 FINISH_APPROACH에서만 확인(혼동 없음). |
@@ -69,8 +73,8 @@
 
 | # | 항목 |
 |---|------|
-| E1 | 첫 정지선=오른쪽 계속, 둘째=왼쪽 탈출 — 실제 갈림길 방향 확정(`roundabout_continue_side`/`exit_side`). |
-| E2 | 타이머값(shortcut_approach_sec, ignore, continue_right, exit_left, white_stable) 실측 튜닝. |
+| E1 | 로터리 고정조향 방향/크기/시간 실측(`stopline_maneuver`: first_dir/second_dir/steer/duration_sec). |
+| E2 | 정지선 debounce·max_count, 장애물 "일정 프레임" 기준, 체커보드 검출 거리. |
 | E3 | 진입 직선이 출구 정지선 바로 직전인지(정지선 2회=한 바퀴 성립). |
 
 ---

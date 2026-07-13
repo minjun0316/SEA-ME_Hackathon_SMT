@@ -8,7 +8,7 @@ Claude는 코드를 만지기 전에 아래 문서들을 **진실의 원천(sour
 |------|-----------|
 | [`docs/interfaces.md`](docs/interfaces.md) | **노드 간 토픽/메시지 계약.** 토픽·QoS·메시지 필드·좌표계를 건드리면 반드시 먼저 확인·수정. |
 | [`docs/architecture.md`](docs/architecture.md) | 계층 구조와 책임 경계, 좌표계 결정, ROS-free core 설계. |
-| [`docs/mission_fsm.md`](docs/mission_fsm.md) | 미션 상태기계(12-state 로터리 지름길). `core/planning/mission.py` 구현 기준. |
+| [`docs/mission_fsm.md`](docs/mission_fsm.md) | 미션 상태기계(5-state). 로터리 회전은 제어단 StoplineManeuver(고정조향). `core/planning/mission.py` 구현 기준. |
 | [`docs/perception_agreement.md`](docs/perception_agreement.md) | 판단↔인지 왕복 계약(follow_color/roi_mode/turn_bias) 상세 합의. |
 | [`docs/calibration.md`](docs/calibration.md) | 조향 트림·액추에이터 매핑 등 캘리브레이션 값. |
 | [`PROGRESS.md`](PROGRESS.md) | 현재까지 진행 상황·결정 로그. 작업 전 최신 상태 확인. |

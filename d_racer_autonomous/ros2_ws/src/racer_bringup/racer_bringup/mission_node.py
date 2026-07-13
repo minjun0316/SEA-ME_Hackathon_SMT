@@ -143,7 +143,6 @@ class MissionNode(Node):
         lane_msg = self._last_lane
         if stale or lane_msg is None:
             lane = LaneObservation(lane_detected=False)   # watchdog: 미검출.
-            yellow = white = False
         else:
             lane = LaneObservation(
                 lane_detected=bool(lane_msg.lane_detected),
@@ -155,15 +154,11 @@ class MissionNode(Node):
                 stop_line_dist=float(lane_msg.stop_line_dist),
                 stop_request=False,
             )
-            yellow = bool(lane_msg.yellow_detected)
-            white = bool(lane_msg.white_detected)
 
         c = self._last_cues
         return MissionObservation(
             lane=lane,
             traffic_light=TrafficLight(int(c.traffic_light)) if c else TrafficLight.NONE,
-            yellow_detected=yellow,
-            white_detected=white,
             red_zone_detected=bool(c.red_zone_detected) if c else False,
             aruco_present=bool(c.aruco_present) if c else False,
             checkerboard_detected=bool(c.checkerboard_detected) if c else False,
@@ -206,7 +201,7 @@ class MissionNode(Node):
         if self._tick % self._log_period == 0 or changed:
             self._prev_log_phase = phase
             self.get_logger().info(
-                f'phase={phase.name} count={self.seq.stopline_count} '
+                f'phase={phase.name} '
                 f'go={cmd.go} speed={cmd.speed_scale:.2f} '
                 f'follow={cmd.follow_color.name} roi={cmd.roi_mode.name} '
                 f'bias={cmd.turn_hint.name} {"(stale)" if stale else ""}'
