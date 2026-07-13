@@ -213,10 +213,6 @@ class LaneDetectNode(Node):
                 f'{self.get_parameter("stopline_row_coverage").value:.2f} '
                 f'rows={res.stopline_n_band}/{self.get_parameter("stopline_min_rows").value}')
         self._prev_stopline = bool(s.stop_line)
-        s.yellow_detected = bool(res.yellow_detected)
-        s.yellow_confidence = float(res.yellow_confidence)
-        s.white_detected = bool(res.white_detected)
-        s.white_confidence = float(res.white_confidence)
         self.pub_status.publish(s)
 
         # --- lane_path (near→far, base_link 미터) ---

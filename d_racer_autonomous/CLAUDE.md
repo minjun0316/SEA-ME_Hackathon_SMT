@@ -17,8 +17,8 @@ Claude는 코드를 만지기 전에 아래 문서들을 **진실의 원천(sour
 > 계약(토픽/메시지)을 바꾸려면 **먼저 `interfaces.md`를 고치고** 커밋 메시지에 `[iface]` 태그 + 팀 공지.
 
 ## 🚗 담당 범위 (이 개발자 = D-Racer)
-- **소유: 제어(controller) + 판단 로직(decision/mission).** 인지(perception)는 **팀원 담당** — 인지 코드는 계약을 통해서만 다루고, 임의로 바꾸지 않는다.
-- 인지와 맞닿는 변경은 계약(`interfaces.md`/`perception_agreement.md`) 기준으로만.
+- **소유: 제어(controller) + 판단(decision/mission) + 인지(perception).** (07-13 인지도 인수 — 팀원 위임 종료.)
+- 인지 코드(`core/perception/`, `d_racer_perception`)도 직접 편집한다. 계약(`interfaces.md`/`perception_agreement.md`)은 이제 남과의 합의가 아니라 **우리 내부 계층 계약**으로 유지 — 토픽/메시지를 바꾸면 여전히 먼저 문서를 고치고 `[iface]` 태그를 단다(계층 일관성용).
 
 ## ⚙️ 작업 방식
 - **설계 먼저 합의.** 미션/요구사항을 확인하고 설계에 합의한 뒤에 코딩한다. 큰 변경은 먼저 계획을 제시.

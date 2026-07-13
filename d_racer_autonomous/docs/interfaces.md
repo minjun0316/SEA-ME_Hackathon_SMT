@@ -104,12 +104,8 @@ float32 lateral_offset    # 차량중심 대비 차선중심 횡오차 [m], +좌
 float32 heading_error     # 차량 전방 대비 차선 접선 오차 [rad]
 bool    stop_line         # 정지선 검출 여부(로터리 카운트용 — 제어단 StoplineManeuver가 셈)
 float32 stop_line_dist    # 정지선까지 거리 [m] (미검출 시 -1.0)
-# [iface 2026-07-06] 색 검출 추가 — 노랑/흰을 둘 다 항상 보고(따라가는 색과 무관).
-# [2026-07-13] 로터리 ROI 방식 폐기 → 아래 yellow/white는 현재 판단 미사용(msg엔 유지).
-bool    yellow_detected   # 노랑 차선 검출 (현재 미션 FSM 미사용)
-float32 yellow_confidence # 0.0~1.0
-bool    white_detected    # 흰 차선 검출 (현재 미션 FSM 미사용)
-float32 white_confidence  # 0.0~1.0
+# [iface 2026-07-13] 색 검출 필드(yellow/white_detected+confidence) 제거 — 로터리 ROI 방식
+#   폐기로 소비처 없음. 노랑/흰 마스크는 인지 내부 차선검출에 계속 쓰이나 상태로 보고하지 않음.
 ```
 
 ### 4.4 `/decision/drive_command` → **`racer_msgs/DriveCommand`** (신규)

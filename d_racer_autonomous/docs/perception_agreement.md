@@ -34,7 +34,7 @@
 | `checkerboard_detected` | MissionCues | YOLO | FINISH_APPROACH→FINISH_STOP |
 | `red_zone_detected` | MissionCues | OpenCV | LANE_FOLLOW→OBSTACLE(진입), OBSTACLE→FINISH(탈출) |
 | `aruco_present` | MissionCues | cv2.aruco(하단 ROI) | OBSTACLE 정지/재출발 |
-| ~~`yellow_detected`/`white_detected`~~ | LaneStatus | OpenCV | **미사용**(로터리 ROI 방식 폐기). msg엔 남아 있음. |
+| ~~`yellow_detected`/`white_detected`~~ | ~~LaneStatus~~ | — | **삭제(07-13)**: 로터리 ROI 방식 폐기로 소비처 없음 → LaneStatus msg에서 제거. 노랑/흰 마스크는 인지 내부 검출에만 사용. |
 
 ## C. 판단 → 인지 : 역방향 지시 (★ 새 경로, `/decision/lane_mode`)
 

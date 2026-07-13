@@ -42,8 +42,8 @@ class LaneCalib:
     # 단일 게이트라 튼튼→노랑<흰→곡선서 노랑쪽 윈도우가 흰선으로 붕괴). image_raw 실측:
     # 노랑 1355→4505px(3.3배), 흰선 프레임(straight11)은 834px로 여전히 노랑<흰이라
     # yellow_dominant 미발동(흰선 안 버림). H도 12~38로 소폭 넓혀 조명 hue 이동 흡수.
-    yellow_lo: Tuple[int, int, int] = (12, 45, 45)
-    yellow_hi: Tuple[int, int, int] = (38, 255, 255)
+    yellow_lo: Tuple[int, int, int] = (12, 100, 150)
+    yellow_hi: Tuple[int, int, int] = (38, 220, 255)
     white_lo: Tuple[int, int, int] = (0, 160, 0)   ##< white_adaptive=False 폴백 하한
     white_hi: Tuple[int, int, int] = (180, 255, 100)  ##< 〃 상한
     # 흰색 마스크 방식. 기본 False = 원본 C++ 고정 임계(white_lo/hi = inRange((0,200,0),
@@ -143,9 +143,6 @@ class LaneCalib:
     m_per_px_lateral: float = 0.005    ##< BEV 가로 1px 당 횡 거리[m]
     x_near_m: float = 0.15             ##< base_link(뒷차축)→BEV 최하단행 전방거리[m]
 
-    # --- 색 신뢰도 정규화(이 픽셀수면 confidence=1.0) ---
-    color_conf_pixels: float = 2000.0
-
 
 @dataclass
 class LaneResult:
@@ -161,10 +158,6 @@ class LaneResult:
     # 진단(계약 밖, 튜닝용): 왜 검출/미검출인지 숫자로 확인.
     stopline_cov_max: float = 0.0  ##< 정지선 ROI 행 커버리지 최댓값(0~1). row_coverage 임계와 비교.
     stopline_n_band: int = 0       ##< 커버리지 임계 넘은 행수. min_rows 임계와 비교.
-    yellow_detected: bool = False
-    yellow_confidence: float = 0.0
-    white_detected: bool = False
-    white_confidence: float = 0.0
     # lane_path: (x,y) 미터, base_link, near→far
     lane_path: List[Tuple[float, float]] = field(default_factory=list)
     debug_image: Optional[np.ndarray] = None
@@ -209,11 +202,6 @@ class LaneDetector:
         white = self._white_mask(hls)
         yellow_px = int(cv2.countNonZero(yellow))
         white_px = int(cv2.countNonZero(white))
-
-        res.yellow_detected = yellow_px > c.yellow_pixel_threshold
-        res.white_detected = white_px > c.yellow_pixel_threshold
-        res.yellow_confidence = min(1.0, yellow_px / c.color_conf_pixels)
-        res.white_confidence = min(1.0, white_px / c.color_conf_pixels)
 
         # 노랑 '우세'면 노랑만, 아니면 노랑∪흰. 우세 = 절대 하한 초과 AND 흰색 대비
         # 비율 조건(흰선 조각이 임계만 넘겨 흰 차선을 버리는 오판 방지). @see LaneCalib.
