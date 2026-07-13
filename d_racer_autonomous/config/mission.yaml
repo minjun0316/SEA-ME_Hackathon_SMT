@@ -9,3 +9,8 @@
 mission:
   # --- 구간별 배율 ---
   slow_speed_scale: 0.5             # 장애물 구역 등 감속 구간 속도 상한 배율.
+  # --- YOLO 추론 게이트 ---
+  # true: 페이즈별 YOLO on/off (출발 신호등/도착 체커보드만 ON, 주행 구간 OFF로 FPS 확보).
+  #       장애물 구역서 아루코 최초 검출 시 ON 래치 → 도착까지 유지.
+  # false: 게이트 끔 = YOLO 항상 ON(기존 동작). 디버깅/전 구간 인지 필요 시.
+  yolo_gate_enable: true

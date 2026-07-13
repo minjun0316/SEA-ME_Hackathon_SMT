@@ -103,8 +103,10 @@ class DriveCommand:
     @var follow_color    추종할 차선 색(인지에 전달). 하위 SM은 기본 WHITE.
     @var turn_hint       갈림길 조향/ROI bias 힌트. 하위 SM은 기본 NONE.
     @var roi_mode        인지 ROI 지시. 하위 SM은 기본 FULL.
+    @var yolo_enable     인지 YOLO 추론 게이트(True=ON). 하위 반응형 SM은 기본 True(항상 ON).
+                         위층 미션 SM만 페이즈에 따라 끄고(주행중) 켠다(출발/도착).
 
-    @note follow_color/turn_hint/roi_mode 는 제어가 아니라 **인지에 줄 지시**다.
+    @note follow_color/turn_hint/roi_mode/yolo_enable 는 제어가 아니라 **인지에 줄 지시**다.
     ROS 발행 시 DriveCommand(제어)와 LaneMode(인지)로 나눠 실어 보낸다.
     """
 
@@ -116,6 +118,7 @@ class DriveCommand:
     follow_color: LaneColor = LaneColor.WHITE
     turn_hint: TurnHint = TurnHint.NONE
     roi_mode: RoiMode = RoiMode.FULL
+    yolo_enable: bool = True
 
 
 class DecisionMaker:

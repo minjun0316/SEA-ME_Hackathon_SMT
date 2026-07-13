@@ -191,6 +191,8 @@ class MissionConfig:
 
     # --- 구간별 배율 ---
     slow_speed_scale: float = 0.5            ##< 장애물 구역 등 감속 구간 속도 상한 배율.
+    # --- YOLO 추론 게이트 ---
+    yolo_gate_enable: bool = True            ##< True=페이즈별 YOLO on/off(출발·도착만 ON, 주행중 OFF로 FPS 확보). False=게이트 끔(항상 ON=기존 동작).
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MissionConfig":

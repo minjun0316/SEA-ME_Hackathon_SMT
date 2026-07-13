@@ -7,6 +7,12 @@ uint8 follow_color   # 추종할 차선 색(아래 COLOR_* 상수)
 uint8 roi_mode       # 볼 ROI(아래 ROI_* 상수)
 uint8 turn_bias      # target 좌/우 bias(아래 BIAS_* 상수)
 
+# YOLO 추론 게이트: 미션 SM이 페이즈에 따라 인지의 무거운 YOLO 추론을 켜고 끈다.
+# true=추론 수행(신호등/체커보드 검출), false=추론 skip(CPU/FPS 확보, aruco·차선은 계속).
+# 게이트 구간: 출발 신호등 대기=ON → 주행중=OFF → 장애물구역서 아루코 보이면 ON(도착까지 유지).
+# 발행자(mission_node) 없으면 인지는 기본 ON 유지(하위호환: 기존처럼 YOLO 항상 켜짐).
+bool yolo_enable     # true=YOLO 추론 ON, false=OFF(skip)
+
 # follow_color 상수 (core.planning.LaneColor 값과 일치)
 uint8 COLOR_WHITE=0
 uint8 COLOR_YELLOW=1

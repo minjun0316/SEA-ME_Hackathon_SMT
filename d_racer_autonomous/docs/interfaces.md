@@ -106,6 +106,9 @@ bool    stop_line         # 정지선 검출 여부(로터리 카운트용 — �
 float32 stop_line_dist    # 정지선까지 거리 [m] (미검출 시 -1.0)
 # [iface 2026-07-13] 색 검출 필드(yellow/white_detected+confidence) 제거 — 로터리 ROI 방식
 #   폐기로 소비처 없음. 노랑/흰 마스크는 인지 내부 차선검출에 계속 쓰이나 상태로 보고하지 않음.
+# [iface 2026-07-13] 지름길 노랑 래치 신호. 인지가 노랑 차선을 안정 검출해 노랑모드로
+#   전환하면 true(점선 끊김엔 hysteresis 유지). 미션이 SHORTCUT 전환에 소비.
+bool    on_yellow         # 노랑모드 래치(지름길 노랑 차선 추종 중)
 ```
 
 ### 4.4 `/decision/drive_command` → **`racer_msgs/DriveCommand`** (신규)
@@ -144,12 +147,18 @@ std_msgs/Header header
 uint8 follow_color  # COLOR_WHITE=0/COLOR_YELLOW=1
 uint8 roi_mode      # ROI_FULL=0/LOWER=1/RIGHT=2/LEFT=3/LOWER_ARUCO=4
 uint8 turn_bias     # BIAS_NONE=0/LEFT=1/RIGHT=2
+bool  yolo_enable   # YOLO 추론 게이트: true=ON, false=skip  [iface 2026-07-13]
 ```
 > **판단→인지** 지시. 미션 SM(5-state)이 상태에 따라 "어느 색/ROI로 볼지"를 준다.
 > 인지는 이 지시대로 ROI 자르기·mask·target을 적용해 lane_path를 만든다.
 > 상수값은 `core.planning`의 LaneColor/RoiMode/TurnHint와 일치. 상세: `perception_agreement.md`.
 > **[2026-07-13]** 로터리 ROI 방식 폐기 → 판단은 RIGHT/LEFT·YELLOW·turn_bias를 발행하지 않는다
 > (항상 follow_color=WHITE, roi_mode∈{FULL,LOWER,LOWER_ARUCO}, turn_bias=NONE). 값은 계약에 유지.
+> **[iface 2026-07-13] `yolo_enable` 추가** — 무거운 YOLO 추론의 페이즈별 on/off 게이트.
+> 미션 SM이 산출: `WAIT_START_SIGNAL`=ON(출발 신호등) → `LANE_FOLLOW`/`SHORTCUT`=OFF(FPS 확보) →
+> `DYNAMIC_OBSTACLE_ZONE`에서 aruco_present 최초 검출 시 ON 래치(도착 체커보드까지 유지).
+> `mission_cues_node`가 구독해 YOLO 추론 호출을 게이트한다(aruco·신호등 hold 등 나머지는 계속).
+> 발행자 없으면 인지는 기본 ON(하위호환). 전체 off(항상 ON)는 `mission.yaml`의 `yolo_gate_enable: false`.
 
 ---
 

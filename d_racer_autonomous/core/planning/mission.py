@@ -41,10 +41,11 @@ class MissionPhase(IntEnum):
     """@brief 상위 미션 페이즈. 값=미션 순서."""
 
     WAIT_START_SIGNAL = 0        ##< 출발점 체커보드에서 초록불 대기.
-    LANE_FOLLOW = 1              ##< 흰 차선 주행(로터리 구간 포함, 회전은 StoplineManeuver 몫).
-    DYNAMIC_OBSTACLE_ZONE = 2    ##< 빨강 구역: 아루코 보이면 정지.
-    FINISH_APPROACH = 3          ##< 체커보드 도착선 접근.
-    FINISH_STOP = 4              ##< 도착 정지(종료).
+    LANE_FOLLOW = 1              ##< 흰 차선 주행(외곽/직진).
+    SHORTCUT = 2                 ##< 지름길: 노랑 차선 추종(인지 on_yellow 래치). 로터리 회전은 StoplineManeuver 몫.
+    DYNAMIC_OBSTACLE_ZONE = 3    ##< 아루코 마커 정지 구역: 마커 보이면 정지, 치우면 도착 접근(red_zone 폐기 07-13).
+    FINISH_APPROACH = 4          ##< 체커보드 도착선 접근.
+    FINISH_STOP = 5              ##< 도착 정지(종료).
 
 
 class TrafficLight(IntEnum):
@@ -66,19 +67,21 @@ class MissionObservation:
 
     lane: LaneObservation = field(default_factory=LaneObservation)  ##< 차선 관측(아래층 입력).
     traffic_light: TrafficLight = TrafficLight.NONE  ##< 신호등(YOLO): 출발.
-    red_zone_detected: bool = False  ##< 빨강 바닥 구역(OpenCV): 장애물 구간.
-    aruco_present: bool = False      ##< 아루코 마커(cv2.aruco, 하단 ROI): 정지.
+    on_yellow: bool = False          ##< 인지 노랑모드 래치(지름길 노랑선 추종 중): SHORTCUT 전환.
+    red_zone_detected: bool = False  ##< 빨강 바닥 구역(OpenCV). ⚠07-13 폐기: 전이에 미사용(필드는 msg 호환 유지). 정지는 aruco_present가 담당.
+    aruco_present: bool = False      ##< 아루코 마커(cv2.aruco): 정지 구역 진입/유지 트리거 + YOLO 재점화.
     checkerboard_detected: bool = False  ##< 체커보드(YOLO): 도착선.
 
 
 # --- 페이즈별 인지 ROI 지시 ------------------------------------------------- #
 _ROI_MAP = {
     MissionPhase.LANE_FOLLOW: RoiMode.LOWER,
+    MissionPhase.SHORTCUT: RoiMode.LOWER,
     MissionPhase.DYNAMIC_OBSTACLE_ZONE: RoiMode.LOWER_ARUCO,
     MissionPhase.FINISH_APPROACH: RoiMode.LOWER,
 }
-# 속도 상한(감속) 적용 페이즈.
-_SLOW_PHASES = frozenset({MissionPhase.DYNAMIC_OBSTACLE_ZONE})
+# 속도 상한(감속) 적용 페이즈(지름길 커브·장애물 구간).
+_SLOW_PHASES = frozenset({MissionPhase.SHORTCUT, MissionPhase.DYNAMIC_OBSTACLE_ZONE})
 
 
 class MissionSequencer:
@@ -102,6 +105,7 @@ class MissionSequencer:
         """@brief 페이즈·타이머·아래층을 모두 초기화한다."""
         self._phase = MissionPhase.WAIT_START_SIGNAL
         self._phase_time = 0.0        ##< 현재 페이즈 지속시간[s].
+        self._yolo_relatch = False    ##< 장애물구역서 아루코 최초검출 시 True(도착까지 YOLO 재점화 래치).
         self.decision.reset()
 
     @property
@@ -114,7 +118,28 @@ class MissionSequencer:
         dt = max(0.0, dt)
         self._phase_time += dt
         self._advance_phase(obs)
-        return self._command(obs, dt)
+        cmd = self._command(obs, dt)
+        cmd.yolo_enable = self._yolo_enable(obs)
+        return cmd
+
+    def _yolo_enable(self, obs: MissionObservation) -> bool:
+        """@brief 인지 YOLO 추론 게이트 산출(페이즈 + 아루코 래치).
+
+        @details 무거운 YOLO는 신호 검출이 필요한 양 끝단에서만 켠다:
+        출발 신호등 대기(WAIT_START_SIGNAL)=ON → 주행중(LANE_FOLLOW/SHORTCUT)=OFF로
+        FPS 확보 → 아루코 마커가 처음 보이면(=정지/종료 임박, 구역 무관) ON을 래치해
+        도착 체커보드(FINISH_APPROACH/STOP)까지 유지한다. 래치는 한 번 서면 reset()
+        전까지 유지(마커 깜빡여도 안 꺼짐). yolo_gate_enable=False면 게이트를 끄고
+        항상 ON(기존 동작). @return True=YOLO 추론 ON.
+        """
+        if not self.cfg.yolo_gate_enable:
+            return True
+        # 출발 이후 아루코가 보이면(=정지/종료 임박) YOLO 재점화 래치. red_zone stub과
+        # 무관하게 동작하도록 페이즈 조건 없이 아루코만으로 건다.
+        if obs.aruco_present and self._phase != MissionPhase.WAIT_START_SIGNAL:
+            self._yolo_relatch = True
+        return (self._phase == MissionPhase.WAIT_START_SIGNAL
+                or self._yolo_relatch)
 
     # --- 페이즈 전이 -----------------------------------------------------
 
@@ -132,11 +157,23 @@ class MissionSequencer:
                 self._set_phase(MissionPhase.LANE_FOLLOW)
 
         elif p == MissionPhase.LANE_FOLLOW:
-            if obs.red_zone_detected:
+            # 아루코 마커 = 정지/종료 임박 트리거(red_zone 폐기, 07-13). 마커 보이면
+            # 어느 주행 페이즈든 정지구역으로. 없으면 노랑 래치로 지름길 전환.
+            if obs.aruco_present:
                 self._set_phase(MissionPhase.DYNAMIC_OBSTACLE_ZONE)
+            elif obs.on_yellow:
+                self._set_phase(MissionPhase.SHORTCUT)
+
+        elif p == MissionPhase.SHORTCUT:
+            # 지름길 중에도 아루코 보이면 정지 우선. 아니면 노랑 해제 시 외곽 복귀.
+            if obs.aruco_present:
+                self._set_phase(MissionPhase.DYNAMIC_OBSTACLE_ZONE)
+            elif not obs.on_yellow:
+                self._set_phase(MissionPhase.LANE_FOLLOW)
 
         elif p == MissionPhase.DYNAMIC_OBSTACLE_ZONE:
-            if not obs.red_zone_detected:
+            # 마커 치우면(재출발) 도착 접근으로. 아루코 도착 근처에만 등장 전제.
+            if not obs.aruco_present:
                 self._set_phase(MissionPhase.FINISH_APPROACH)
 
         elif p == MissionPhase.FINISH_APPROACH:

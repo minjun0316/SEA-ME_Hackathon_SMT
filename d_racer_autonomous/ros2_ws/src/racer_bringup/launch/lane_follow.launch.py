@@ -49,7 +49,9 @@ def generate_launch_description():
         DeclareLaunchArgument('use_control', default_value='True',
                               description='키트 control_node(서보/모터 액추에이터) 도 함께 띄울지'),
         DeclareLaunchArgument('use_decision', default_value='False',
-                              description='판단 게이트(정지선/색선택). 라인트래킹엔 불필요, 기본 off'),
+                              description='반응형 판단 게이트(정지선/아루코 정지). 라인트래킹엔 불필요, 기본 off. use_mission과 동시 사용 금지(둘 다 drive_command 발행).'),
+        DeclareLaunchArgument('use_mission', default_value='False',
+                              description='전체 미션 시퀀서(mission_node) 띄우기. 출발 신호등 대기→차선주행→지름길→장애물정지→도착정지 전체 미션 + YOLO 페이즈 게이트(/decision/lane_mode.yolo_enable). use_decision과 배타.'),
         DeclareLaunchArgument('use_battery', default_value='True',
                               description='battery_node(전압 감시). 저전압 컷오프 대비 기본 on'),
         DeclareLaunchArgument('use_monitor', default_value='True',
@@ -158,6 +160,22 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_decision')),
     )
 
+    # 3b) 미션 시퀀서(옵션): 전체 미션 SM(출발신호등~도착정지) + 인지 역채널(lane_mode).
+    #     /decision/drive_command(제어 게이트) + /decision/lane_mode(YOLO 페이즈 게이트) 발행.
+    #     mission_cues_node가 lane_mode.yolo_enable을 구독해 YOLO 추론을 페이즈별로 on/off.
+    #     ⚠ use_decision과 배타(둘 다 drive_command 발행). 전체 미션 주행은 이걸 켠다.
+    mission = Node(
+        package='racer_bringup',
+        executable='mission_node',
+        name='mission_node',
+        output='screen',
+        parameters=[{
+            'rate_hz': LaunchConfiguration('rate_hz'),
+            'lane_timeout': LaunchConfiguration('lane_timeout'),
+        }],
+        condition=IfCondition(LaunchConfiguration('use_mission')),
+    )
+
     # 4) 제어: topic 모드(lane_path + drive_command) → /control
     controller = Node(
         package='racer_bringup',
@@ -235,5 +253,5 @@ def generate_launch_description():
     )
 
     return LaunchDescription(
-        args + [camera, lane, mission_cues, decision, controller,
+        args + [camera, lane, mission_cues, decision, mission, controller,
                 control, battery, monitor, yolo])

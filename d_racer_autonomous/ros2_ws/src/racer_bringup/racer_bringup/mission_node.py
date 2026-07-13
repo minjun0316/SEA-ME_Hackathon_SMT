@@ -143,6 +143,7 @@ class MissionNode(Node):
         lane_msg = self._last_lane
         if stale or lane_msg is None:
             lane = LaneObservation(lane_detected=False)   # watchdog: 미검출.
+            on_yellow = False
         else:
             lane = LaneObservation(
                 lane_detected=bool(lane_msg.lane_detected),
@@ -154,11 +155,13 @@ class MissionNode(Node):
                 stop_line_dist=float(lane_msg.stop_line_dist),
                 stop_request=False,
             )
+            on_yellow = bool(lane_msg.on_yellow)
 
         c = self._last_cues
         return MissionObservation(
             lane=lane,
             traffic_light=TrafficLight(int(c.traffic_light)) if c else TrafficLight.NONE,
+            on_yellow=on_yellow,
             red_zone_detected=bool(c.red_zone_detected) if c else False,
             aruco_present=bool(c.aruco_present) if c else False,
             checkerboard_detected=bool(c.checkerboard_detected) if c else False,
@@ -193,6 +196,7 @@ class MissionNode(Node):
         mode.follow_color = int(cmd.follow_color)
         mode.roi_mode = int(cmd.roi_mode)
         mode.turn_bias = int(cmd.turn_hint)
+        mode.yolo_enable = bool(cmd.yolo_enable)   # 인지 YOLO 추론 게이트(페이즈별 on/off).
         self.pub_mode.publish(mode)
 
         self._tick += 1
@@ -204,7 +208,8 @@ class MissionNode(Node):
                 f'phase={phase.name} '
                 f'go={cmd.go} speed={cmd.speed_scale:.2f} '
                 f'follow={cmd.follow_color.name} roi={cmd.roi_mode.name} '
-                f'bias={cmd.turn_hint.name} {"(stale)" if stale else ""}'
+                f'bias={cmd.turn_hint.name} yolo={"ON" if cmd.yolo_enable else "OFF"} '
+                f'{"(stale)" if stale else ""}'
             )
 
     def destroy_node(self):

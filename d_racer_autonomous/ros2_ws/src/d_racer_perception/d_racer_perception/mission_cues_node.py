@@ -62,7 +62,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy  # noqa: E402
 from rclpy.time import Time  # noqa: E402
 
 from sensor_msgs.msg import CompressedImage  # noqa: E402
-from racer_msgs.msg import MissionCues  # noqa: E402
+from racer_msgs.msg import MissionCues, LaneMode  # noqa: E402
 
 from core.perception.aruco_detect import ArucoDetector, ArucoConfig  # noqa: E402
 from core.perception.traffic_light_detect import (  # noqa: E402
@@ -80,6 +80,7 @@ class MissionCuesNode(Node):
         # --- 파라미터(전부 YAML/CLI 조정) ---
         self.declare_parameter('image_topic', 'camera/image/compressed')
         self.declare_parameter('mission_cues_topic', '/perception/mission_cues')
+        self.declare_parameter('lane_mode_topic', '/decision/lane_mode')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('publish_debug', True)
         self.declare_parameter('debug_jpeg_quality', 80)
@@ -189,6 +190,14 @@ class MissionCuesNode(Node):
             self.pub_yolo_debug = self.create_publisher(
                 CompressedImage, 'perception/mission_cues/yolo/debug/compressed', 1)
 
+        # YOLO 추론 게이트(판단→인지 역채널 /decision/lane_mode.yolo_enable).
+        # 미션 SM이 페이즈별로 켜고 끈다(출발/도착만 ON, 주행중 OFF로 FPS 확보).
+        # 기본 True: 발행자(mission_node) 없거나 첫 메시지 전엔 ON 유지(하위호환·출발 신호등 검출).
+        self._yolo_gate = True
+        lane_mode_topic = str(self.get_parameter('lane_mode_topic').value)
+        self.create_subscription(
+            LaneMode, lane_mode_topic, self._on_lane_mode, reliable_q)
+
         # YOLO 시간 상태(스로틀·초록 확정·체커 hold).
         self._yolo_last_infer: Time | None = None    ##< 마지막 추론 시각(스로틀).
         self._yolo_result_time: Time | None = None   ##< 마지막 추론 결과 시각(stale 판정).
@@ -224,7 +233,10 @@ class MissionCuesNode(Node):
                 self._held_present = False
 
         # --- YOLO 미션신호: 스로틀 추론 → 초록 연속 확정 / 체커 hold 갱신 ---
-        if self.tl_detector is not None:
+        # 게이트 OFF(주행 구간)면 추론을 건너뛴다 → CPU/FPS 확보. 결과는 yolo_stale_sec
+        # 지나면 _resolve_cues가 NONE으로 폴백(멈춘 프레임 신호에 붙들리지 않음).
+        # aruco/차선 검출은 게이트와 무관하게 계속 동작.
+        if self.tl_detector is not None and self._yolo_gate:
             due = (self._yolo_last_infer is None or
                    (now - self._yolo_last_infer).nanoseconds * 1e-9
                    >= self._yolo_min_interval)
@@ -266,6 +278,17 @@ class MissionCuesNode(Node):
             self.get_logger().info(
                 f'aruco raw={res.present} ids={res.ids} → present(held)={self._held_present}',
                 throttle_duration_sec=0.5)
+
+    def _on_lane_mode(self, msg: LaneMode):
+        """@brief 판단 역채널 수신 → YOLO 추론 게이트 갱신(전이 시 로그)."""
+        gate = bool(msg.yolo_enable)
+        if gate != self._yolo_gate:
+            self.get_logger().info(
+                f'YOLO gate {"ON" if gate else "OFF"} (from mission /decision/lane_mode)')
+            # OFF 전이 시 초록 확정 타이머를 접어 재점화 후 stale 신호가 안 남게 한다.
+            if not gate:
+                self._green_since = None
+        self._yolo_gate = gate
 
     def _resolve_cues(self, now):
         """@brief 시간 상태로 발행할 traffic_light + checkerboard 계산.
