@@ -1,12 +1,12 @@
 import os
 from pathlib import Path
-import re
 import shutil
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from battery_msgs.msg import Battery
 from control_msgs.msg import Control
 from joystick_msgs.msg import Joystick
+from racer_msgs.msg import LaneStatus
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -59,10 +59,11 @@ class MonitorNode(Node):
         self.declare_parameter('battery_topic', 'battery_status')
         self.declare_parameter('image_topic', '/camera/image/compressed')
         self.declare_parameter('debug_image',True)
-        self.declare_parameter('opencv_grayscale_topic', '/opencv/image/grayscale')
-        self.declare_parameter('opencv_blur_topic', '/opencv/image/blur')
-        self.declare_parameter('opencv_edge_topic', '/opencv/image/edge')
+        self.declare_parameter('sliding_window_topic', '/perception/lane/debug/compressed')
+        self.declare_parameter('lane_edge_topic', '/perception/lane/debug/edges/compressed')
+        self.declare_parameter('yolo_topic', '/perception/test/yolo_detect/debug/compressed')
         self.declare_parameter('control_topic', '/control')
+        self.declare_parameter('lane_status_topic', '/perception/lane_status')
         self.declare_parameter('joystick_topic', 'joystick')
         self.declare_parameter('storage_path', '/')
         self.declare_parameter('storage_poll_interval_sec', 1.0)
@@ -87,9 +88,10 @@ class MonitorNode(Node):
         self.image_topic = self.get_yaml_or_param_str(yaml_config, 'IMAGE_TOPIC', 'image_topic')
         self.control_topic = self.get_yaml_or_param_str(yaml_config, 'CONTROL_TOPIC', 'control_topic')
         self.debug_image = self.get_yaml_or_param_bool_multi(yaml_config, ('OPENCV_DEBUG_MODE', 'DEBUG_IMAGE'), 'debug_image')
-        self.opencv_grayscale_topic = self.get_yaml_or_param_str(yaml_config, 'OPENCV_GRAYSCALE_TOPIC', 'opencv_grayscale_topic')
-        self.opencv_blur_topic = self.get_yaml_or_param_str(yaml_config, 'OPENCV_BLUR_TOPIC', 'opencv_blur_topic')
-        self.opencv_edge_topic = self.get_yaml_or_param_str(yaml_config, 'OPENCV_EDGE_TOPIC', 'opencv_edge_topic')
+        self.sliding_window_topic = self.get_yaml_or_param_str(yaml_config, 'SLIDING_WINDOW_TOPIC', 'sliding_window_topic')
+        self.lane_edge_topic = self.get_yaml_or_param_str(yaml_config, 'LANE_EDGE_TOPIC', 'lane_edge_topic')
+        self.yolo_topic = self.get_yaml_or_param_str(yaml_config, 'YOLO_TOPIC', 'yolo_topic')
+        self.lane_status_topic = self.get_yaml_or_param_str(yaml_config, 'LANE_STATUS_TOPIC', 'lane_status_topic')
         self.joystick_topic = self.get_yaml_or_param_str(yaml_config, 'JOYSTICK_TOPIC', 'joystick_topic')
         if not self.control_topic:
             # Backward compatibility for legacy typo key.
@@ -134,15 +136,10 @@ class MonitorNode(Node):
         self.header_logo_path = resolve_resource_path('Telechips-CI-White.png')
         self.telechips_logo_path = resolve_resource_path('Telechips-CI-White.png')
         self.topst_logo_path = resolve_resource_path('TOPST-Logo(White).png')
-
-        # 디버그 화면 채널 목록(config DEBUG_CHANNELS). 없으면 기존 opencv 3종으로 폴백.
-        self.debug_channels = self._build_debug_channels(yaml_config)
-
         self.state = MonitorState(
             stale_timeout_sec,
             image_source_width,
             image_source_height,
-            debug_keys=[ch['key'] for ch in self.debug_channels],
         )
         self.app = create_app(
             self.state,
@@ -159,7 +156,10 @@ class MonitorNode(Node):
             self.image_display_width,
             self.image_display_height,
             self.debug_image,
-            self.debug_channels,
+            self.sliding_window_topic,
+            self.lane_edge_topic,
+            self.yolo_topic,
+            self.lane_status_topic,
             graph_snapshot_provider=self.get_graph_snapshot,
         )
         self.server_thread = FlaskServerThread(self.app, self.web_host, self.web_port)
@@ -177,17 +177,34 @@ class MonitorNode(Node):
             10,
         )
         if self.debug_image:
-            for channel in self.debug_channels:
-                self.create_subscription(
-                    CompressedImage,
-                    channel['topic'],
-                    self._make_debug_callback(channel['key'], channel['topic']),
-                    10,
-                )
+            self.create_subscription(
+                CompressedImage,
+                self.sliding_window_topic,
+                self.debug_sliding_window_callback,
+                10,
+            )
+            self.create_subscription(
+                CompressedImage,
+                self.lane_edge_topic,
+                self.debug_lane_edge_callback,
+                10,
+            )
+            self.create_subscription(
+                CompressedImage,
+                self.yolo_topic,
+                self.debug_yolo_callback,
+                10,
+            )
         self.create_subscription(
             Control,
             self.control_topic,
             self.control_callback,
+            10,
+        )
+        self.create_subscription(
+            LaneStatus,
+            self.lane_status_topic,
+            self.lane_status_callback,
             10,
         )
         self.create_subscription(
@@ -211,6 +228,7 @@ class MonitorNode(Node):
             f'image_topic={self.image_topic} \n'
             f'debug_image={self.debug_image}, \n'
             f'control_topic={self.control_topic}, \n'
+            f'lane_status_topic={self.lane_status_topic}, \n'
             f'joystick_topic={self.joystick_topic}, \n'
             f'storage_path={self.storage_path}, \n'
             f'web=http://{display_host}:{self.web_port} \n' 
@@ -219,56 +237,6 @@ class MonitorNode(Node):
 
     def get_graph_snapshot(self):
         return build_graph_snapshot(self)
-
-    @staticmethod
-    def _slugify(text):
-        """@brief 라벨 → URL/상태키로 쓸 슬러그(영숫자+언더스코어)."""
-        slug = re.sub(r'[^a-z0-9]+', '_', str(text).lower()).strip('_')
-        return slug or 'ch'
-
-    def _build_debug_channels(self, yaml_config):
-        """@brief config DEBUG_CHANNELS(label/topic 리스트) → 정규화된 채널 목록.
-
-        @details 각 채널 = {key, label, topic}. key는 URL/상태 딕셔너리 키로 쓰이며
-                 중복되면 접미사(_2, _3...)로 유일화한다. DEBUG_CHANNELS가 없으면
-                 기존 opencv 3종(grayscale/blur/edge)으로 폴백해 하위호환 유지.
-        """
-        raw = yaml_config.get('DEBUG_CHANNELS')
-        channels = []
-
-        if isinstance(raw, list) and raw:
-            for item in raw:
-                if not isinstance(item, dict):
-                    continue
-                topic = str(item.get('topic', '')).strip()
-                if not topic:
-                    continue
-                label = str(item.get('label', topic)).strip() or topic
-                key = str(item.get('key', '')).strip() or self._slugify(label)
-                channels.append({'key': key, 'label': label, 'topic': topic})
-        else:
-            legacy = [
-                ('grayscale', 'Grayscale', self.opencv_grayscale_topic),
-                ('blur', 'Blur', self.opencv_blur_topic),
-                ('edge', 'Edge', self.opencv_edge_topic),
-            ]
-            for key, label, topic in legacy:
-                if topic:
-                    channels.append({'key': key, 'label': label, 'topic': topic})
-
-        # 키 유일화(중복 라벨/토픽 대비).
-        seen = set()
-        for channel in channels:
-            base = channel['key']
-            unique = base
-            suffix = 1
-            while unique in seen:
-                suffix += 1
-                unique = f'{base}_{suffix}'
-            channel['key'] = unique
-            seen.add(unique)
-
-        return channels
 
     def load_vehicle_config(self):
         if not os.path.exists(self.vehicle_config_file):
@@ -341,6 +309,21 @@ class MonitorNode(Node):
                 f'Control updated: throttle={msg.throttle:.2f}, steering={msg.steering:.2f}'
             )
 
+    def lane_status_callback(self, msg):
+        self.state.update_lane_status(
+            msg.lane_detected,
+            msg.confidence,
+            msg.lateral_offset,
+            msg.heading_error,
+        )
+
+        if self.debug_log:
+            self.get_logger().info(
+                f'LaneStatus updated: detected={msg.lane_detected}, '
+                f'conf={msg.confidence:.2f}, off={msg.lateral_offset:+.3f}m, '
+                f'head={msg.heading_error:+.3f}rad'
+            )
+
     def _debug_image_callback(self, msg, image_key, topic):
         try:
             frame_bytes = bytes(msg.data)
@@ -353,13 +336,14 @@ class MonitorNode(Node):
         except Exception as exc:
             self.get_logger().error(f'Failed to process {topic} frame: {exc}')
 
-    def _make_debug_callback(self, image_key, topic):
-        """@brief 채널별 디버그 콜백 생성(루프 클로저 캡처 버그 방지)."""
+    def debug_sliding_window_callback(self, msg):
+        self._debug_image_callback(msg, 'sliding_window', self.sliding_window_topic)
 
-        def _callback(msg):
-            self._debug_image_callback(msg, image_key, topic)
+    def debug_lane_edge_callback(self, msg):
+        self._debug_image_callback(msg, 'lane_edge', self.lane_edge_topic)
 
-        return _callback
+    def debug_yolo_callback(self, msg):
+        self._debug_image_callback(msg, 'yolo', self.yolo_topic)
 
     def joystick_callback(self, msg):
         self.state.update_recording(msg.is_recording)

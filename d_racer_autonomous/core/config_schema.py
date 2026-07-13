@@ -82,17 +82,25 @@ class PurePursuitConfig:
 class LateralPDConfig:
     """@brief 근거리 차선오차 PD(+heading) 횡제어 파라미터.
 
-    @details δ = k_heading·heading_error + k_cross·lateral_offset + k_deriv·d(e)/dt.
-    부호 규약: +오차/+heading → +조향(좌). 출력은 정규화[-1,1]+트림+smoothing.
+    @details δ = k_ff·κ + k_heading·heading_error + k_cross·lateral_offset + k_deriv·d(e)/dt.
+    부호 규약: +오차/+heading/+κ(좌커브) → +조향(좌). 출력은 정규화[-1,1]+트림+smoothing.
     """
 
     steering_sign: float = 1.0  ##< 조향 부호(차량 적응). +1=+오차→좌회전. 거치대서 반대로 꺾이면 -1. ⚠️실차 첫 구동 전 확인.
-    k_cross: float = 1.2        ##< lateral_offset[m] → 정규화 조향. 예: 0.1m→0.12. 차선복귀 P.
+    k_cross: float = 1.2        ##< lateral_offset[m] → 정규화 조향(직선 baseline). 예: 0.1m→0.12. 차선복귀 P.
+    k_cross_kappa: float = 0.0  ##< |κ_eff| 당 k_cross 가산. 커브서 중심복귀 부스트, 직선(κ_eff=0)은 baseline. 0=스케줄 off(상수 k_cross).
+    k_cross_max: float = 1.5    ##< 곡률 스케줄된 k_cross 상한(과조향 방지).
     k_heading: float = 0.8      ##< heading_error[rad] → 조향. 위빙 억제·자연 감쇠(Stanley heading항). 커브 못돌면 ↑.
     k_deriv: float = 0.0        ##< d(lateral)/dt 항(선택 D). 근거리 노이즈 커서 기본 0(heading이 주 감쇠).
     deriv_smoothing: float = 0.3  ##< 미분 EMA 가중치(노이즈 저역통과). 작을수록 강한 필터.
     max_offset: float = 0.5     ##< lateral_offset 클램프[m](오검출 스파이크→과조향 방지).
     steering_smoothing: float = 0.3  ##< 출력 β: out=(1-β)·old+β·new. 작을수록 부드럽(지연↑).
+    # --- 곡률 피드포워드(신규): 커브 유지 조향을 오차 없이 미리 얹어 PD의 정상상태
+    #     오차(커브서 중심 못잡음)를 제거. κ는 lane_path 근거리에서 유도(부호 있음). ---
+    k_ff: float = 0.0           ##< 부호곡률 κ[1/m] → 조향 피드포워드 이득. 0=off(기존 순수PD). 커브서 안쪽 못붙으면 ↑.
+    curvature_smoothing: float = 0.3  ##< κ EMA 가중치(lane_path 노이즈 저역통과). 작을수록 강한 필터·지연↑.
+    curvature_deadband: float = 0.0   ##< 이하 |κ_s|는 직선 취급(ff=0). 직선 곡률노이즈 격리. 직선서 ff 들썩이면 ↑.
+    curvature_preview: float = 0.4    ##< 근거리 부호곡률 평균 구간[m]. 차량 앞 이 거리의 평균 κ를 피드포워드로.
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "LateralPDConfig":
@@ -113,6 +121,27 @@ class SpeedConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SpeedConfig":
+        return cls(**_filter_known(cls, data or {}))
+
+
+@dataclass
+class StoplineManeuverConfig:
+    """@brief 정지선 카운트 → 개루프 고정스티어 기동 파라미터(로터리 진입/탈출).
+
+    @details on/off는 운영 플래그라 controller_node의 ROS 파라미터
+    `stopline_maneuver_enable`(런치 인자)로 켠다. 여기 값들은 튜닝값이다.
+    조향 크기는 **트림 전 raw**[-1,1]: +면 좌, -면 우. @see core/planning/stopline_maneuver.py
+    """
+
+    steer: float = 0.35        ##< 고정 조향 크기(정규화, 트림 전 raw). "조금". 실차서 커브 못 돌면 ↑, 과회전이면 ↓.
+    duration_sec: float = 1.5  ##< 기동 유지 시간[s]. 회전이 덜 되면 ↑, 지나치면 ↓.
+    first_dir: float = 1.0     ##< 1번째 정지선 방향(+1=좌회전).
+    second_dir: float = -1.0   ##< 2번째 정지선 방향(-1=우회전, 탈출).
+    debounce_sec: float = 1.5  ##< 정지선 카운트 최소 간격[s](한 정지선 중복 카운트 방지).
+    max_count: int = 2         ##< 이 카운트까지만 기동(이후 정지선 무시).
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StoplineManeuverConfig":
         return cls(**_filter_known(cls, data or {}))
 
 
@@ -140,6 +169,7 @@ class DecisionConfig:
     stop_trigger_dist: float = 0.25  ##< 정지선이 이 거리 이내면 STOP[m].
     stop_approach_dist: float = 0.60 ##< 정지선이 이 거리 이내면 접근 감속 SLOW[m].
     stop_dwell: float = 2.0          ##< STOP 유지 시간[s]. 이후 정지선 유지돼도 재출발.
+    stopline_heading_gate: float = 0.0  ##< 커브 게이트[rad]: |heading_error|가 이 값 이상이면 정지선 무시(커브서 가로로 눕는 차선 오인 차단). 0=게이트 없음. heading_slow(0.35)보다 약간 크게 ~0.40 권장.
     # --- 상태별 출력 배율 ---
     drive_speed_scale: float = 1.0   ##< DRIVE 속도 배율.
     slow_speed_scale: float = 0.5    ##< SLOW 속도 배율.
@@ -241,6 +271,7 @@ class AppConfig:
     pure_pursuit: PurePursuitConfig = field(default_factory=PurePursuitConfig)
     lateral_pd: LateralPDConfig = field(default_factory=LateralPDConfig)
     speed: SpeedConfig = field(default_factory=SpeedConfig)
+    stopline_maneuver: StoplineManeuverConfig = field(default_factory=StoplineManeuverConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     mission: MissionConfig = field(default_factory=MissionConfig)
     battery: BatteryConfig = field(default_factory=BatteryConfig)
@@ -254,6 +285,7 @@ class AppConfig:
             pure_pursuit=PurePursuitConfig.from_dict(data.get("pure_pursuit", {})),
             lateral_pd=LateralPDConfig.from_dict(data.get("lateral_pd", {})),
             speed=SpeedConfig.from_dict(data.get("speed", {})),
+            stopline_maneuver=StoplineManeuverConfig.from_dict(data.get("stopline_maneuver", {})),
             decision=DecisionConfig.from_dict(data.get("decision", {})),
             mission=MissionConfig.from_dict(data.get("mission", {})),
             battery=BatteryConfig.from_dict(data.get("battery", {})),
@@ -267,7 +299,7 @@ def load_config(*yaml_paths: str) -> AppConfig:
     @param yaml_paths 읽을 YAML 경로들. 뒤쪽 파일이 앞쪽을 덮어쓴다(merge).
     @return 검증된 AppConfig.
 
-    @note 최상위 키(vehicle/pure_pursuit/lateral_pd/speed/decision/mission/battery/sim) 단위로 얕게
+    @note 최상위 키(vehicle/pure_pursuit/lateral_pd/speed/stopline_maneuver/decision/mission/battery/sim) 단위로 얕게
           병합한다. 같은 섹션의 일부 키만 override 하려면 해당 섹션 전체를
           한 파일에 두는 것을 권장한다.
     """

@@ -206,7 +206,13 @@ class DecisionMaker:
                 return self._state
 
         # 4) 정지선: dwell 래치가 안 걸린 경우에만 정지/접근감속.
-        if obs.stop_line and obs.stop_line_dist >= 0.0 and not self._stopline_done:
+        #    커브 게이트: 헤딩오차가 크면(=커브 중) 정지선 신호를 무시한다. 커브서
+        #    가로로 눕는 차선을 정지선으로 오인하는 것을 차단(검출단 폭 하한과 겹치는
+        #    안전망). 진짜 정지선은 직진 접근이라 heading_error가 작아 게이트가 열려 있다.
+        in_curve = (cfg.stopline_heading_gate > 0.0
+                    and abs(obs.heading_error) >= cfg.stopline_heading_gate)
+        if (obs.stop_line and obs.stop_line_dist >= 0.0
+                and not self._stopline_done and not in_curve):
             if obs.stop_line_dist <= cfg.stop_trigger_dist:
                 return DriveState.STOP
             if obs.stop_line_dist <= cfg.stop_approach_dist:

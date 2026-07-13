@@ -30,9 +30,18 @@
           <div class="status-card__header">
             <div>
               <p class="status-card__label">Image Status</p>
-              <p class="status-card__subtitle">카메라 상태 · 차선 인지 디버그</p>
+              <p class="status-card__subtitle">실시간 카메라 스트림</p>
             </div>
             <span class="status-chip" id="image-chip">WAITING</span>
+          </div>
+
+          <div class="image-stage">
+            <img
+              id="camera-frame"
+              class="image-stage__frame"
+              src="{{ placeholder_url }}"
+              alt="Camera stream preview"
+            >
           </div>
 
           <dl class="status-meta">
@@ -50,19 +59,23 @@
             </div>
           </dl>
 
-          <div class="image-stage">
-            <img id="camera-frame" class="image-stage__frame" src="{{ placeholder_url }}" alt="Camera live frame">
-          </div>
-
-          {% if debug_image and debug_channels %}
+          {% if debug_image %}
           <div class="debug-grid" id="debug-grid">
-            {% for ch in debug_channels %}
             <article class="debug-panel">
-              <p class="debug-panel__title">{{ ch.label }}</p>
-              <img id="debug-frame-{{ ch.key }}" class="debug-panel__frame" src="{{ placeholder_url }}" alt="{{ ch.label }} preview">
-              <p class="debug-panel__topic">{{ ch.topic }}</p>
+              <p class="debug-panel__title">Sliding Window</p>
+              <img id="debug-frame-sliding_window" class="debug-panel__frame" src="{{ placeholder_url }}" alt="Sliding window preview">
+              <p class="debug-panel__topic">{{ sliding_window_topic }}</p>
             </article>
-            {% endfor %}
+            <article class="debug-panel">
+              <p class="debug-panel__title">Lane Edge</p>
+              <img id="debug-frame-lane_edge" class="debug-panel__frame" src="{{ placeholder_url }}" alt="Lane edge preview">
+              <p class="debug-panel__topic">{{ lane_edge_topic }}</p>
+            </article>
+            <article class="debug-panel">
+              <p class="debug-panel__title">YOLO</p>
+              <img id="debug-frame-yolo" class="debug-panel__frame" src="{{ placeholder_url }}" alt="YOLO preview">
+              <p class="debug-panel__topic">{{ yolo_topic }}</p>
+            </article>
           </div>
           {% endif %}
         </article>
@@ -140,6 +153,85 @@
           </dl>
         </article>
 
+        <article class="status-card drivedbg-card is-waiting" id="drivedbg-card">
+          <div class="status-card__header">
+            <div>
+              <p class="status-card__label">Drive Debug</p>
+              <p class="status-card__subtitle">인지 → 제어 진단</p>
+            </div>
+            <span class="status-chip" id="drivedbg-chip">WAITING</span>
+          </div>
+
+          <div class="drivedbg-section">
+            <p class="drivedbg-section__title">Perception (lane_status)</p>
+
+            <div class="drivedbg-flagrow">
+              <span class="drivedbg-flag" id="lane-detected-flag">
+                <span class="drivedbg-flag__dot" aria-hidden="true"></span>
+                <span id="lane-detected-label">--</span>
+              </span>
+              <div class="drivedbg-conf">
+                <span class="drivedbg-conf__label">confidence</span>
+                <div class="battery-meter drivedbg-conf__meter" aria-hidden="true">
+                  <div class="battery-meter__fill" id="confidence-meter-fill"></div>
+                </div>
+                <span class="drivedbg-conf__value" id="confidence-value">--</span>
+              </div>
+            </div>
+
+            <div class="control-stack drivedbg-stack">
+              <section class="control-row">
+                <p class="control-row__name">Lateral offset <span class="control-row__unit">m, +좌</span></p>
+                <div class="control-row__body">
+                  <div class="control-bar is-neutral" id="offset-bar">
+                    <div class="control-bar__baseline"></div>
+                    <div class="control-bar__fill" id="offset-bar-fill"></div>
+                  </div>
+                  <p class="control-row__value" id="offset-value">--.--</p>
+                </div>
+              </section>
+
+              <section class="control-row">
+                <p class="control-row__name">Heading error <span class="control-row__unit">deg, +좌</span></p>
+                <div class="control-row__body">
+                  <div class="control-bar is-neutral" id="heading-bar">
+                    <div class="control-bar__baseline"></div>
+                    <div class="control-bar__fill" id="heading-bar-fill"></div>
+                  </div>
+                  <p class="control-row__value" id="heading-value">--.--</p>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <div class="drivedbg-section">
+            <p class="drivedbg-section__title">Control (output)</p>
+            <div class="control-stack drivedbg-stack">
+              <section class="control-row">
+                <p class="control-row__name">Steering <span class="control-row__unit">norm [-1,1]</span></p>
+                <div class="control-row__body">
+                  <div class="control-bar is-neutral" id="drivedbg-steering-bar">
+                    <div class="control-bar__baseline"></div>
+                    <div class="control-bar__fill" id="drivedbg-steering-bar-fill"></div>
+                  </div>
+                  <p class="control-row__value" id="drivedbg-steering-value">--.--</p>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <dl class="status-meta">
+            <div class="status-meta__row">
+              <dt>Lane topic</dt>
+              <dd>{{ lane_status_topic }}</dd>
+            </div>
+            <div class="status-meta__row">
+              <dt>Updated</dt>
+              <dd id="drivedbg-updated">Waiting for message</dd>
+            </div>
+          </dl>
+        </article>
+
         <article class="status-card storage-card is-waiting" id="storage-card">
           <div class="status-card__header">
             <div>
@@ -199,12 +291,10 @@
         statusEndpoint: {{ url_for('api_status')|tojson }},
         graphEndpoint: {{ url_for('api_graph')|tojson }},
         frameEndpoint: {{ url_for('api_frame')|tojson }},
+        debugFrameSlidingWindowEndpoint: {{ url_for('api_frame_sliding_window')|tojson }},
+        debugFrameLaneEdgeEndpoint: {{ url_for('api_frame_lane_edge')|tojson }},
+        debugFrameYoloEndpoint: {{ url_for('api_frame_yolo')|tojson }},
         debugImageEnabled: {{ debug_image|tojson }},
-        debugChannels: [
-          {% for ch in debug_channels %}
-          { key: {{ ch.key|tojson }}, label: {{ ch.label|tojson }}, endpoint: {{ url_for('api_frame_debug', key=ch.key)|tojson }} }{% if not loop.last %},{% endif %}
-          {% endfor %}
-        ],
         placeholderUrl: {{ placeholder_url|tojson }},
         refreshIntervalMs: {{ refresh_interval_ms|tojson }},
         imageRefreshIntervalMs: {{ image_refresh_interval_ms|tojson }}

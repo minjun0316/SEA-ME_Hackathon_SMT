@@ -22,6 +22,7 @@ decision:
   stop_trigger_dist: 0.25  # 정지선이 이 거리 이내면 STOP [m].
   stop_approach_dist: 0.60 # 정지선이 이 거리 이내면 접근 감속 SLOW [m].
   stop_dwell: 2.0          # STOP 유지 시간 [s]. 이후 정지선 유지돼도 재출발.
+  stopline_heading_gate: 0.40  # 커브 게이트[rad]: |heading_error|가 이 값 이상이면(=커브 중) 정지선 무시. 커브서 가로로 눕는 차선 오인 차단(검출단 폭 하한과 겹치는 안전망). heading_slow(0.35)보다 약간 크게 0.40(~23°). 직진 접근 정지선은 heading 작아 통과. 0=게이트 없음.
 
   # --- 상태별 출력 배율 ---
   drive_speed_scale: 1.0   # DRIVE 속도 배율.

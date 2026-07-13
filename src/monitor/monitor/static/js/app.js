@@ -8,6 +8,11 @@ const STORAGE_THRESHOLDS = {
   caution: 85,
 };
 
+// Full-scale for the 0-centered debug bars (value that maps to a full half-bar).
+const OFFSET_FULL_SCALE_M = 0.5;      // lateral_offset [m]
+const HEADING_FULL_SCALE_DEG = 30;    // heading_error [deg]
+const RAD_TO_DEG = 180 / Math.PI;
+
 const CARD_CLASSES = [
   'is-good',
   'is-live',
@@ -22,8 +27,10 @@ const config = window.MONITOR_CONFIG || {
   statusEndpoint: '/api/status',
   graphEndpoint: '/api/graph',
   frameEndpoint: '/api/frame',
+  debugFrameSlidingWindowEndpoint: '/api/frame/sliding_window',
+  debugFrameLaneEdgeEndpoint: '/api/frame/lane_edge',
+  debugFrameYoloEndpoint: '/api/frame/yolo',
   debugImageEnabled: false,
-  debugChannels: [],
   placeholderUrl: '/api/frame/placeholder',
   refreshIntervalMs: 1000,
   imageRefreshIntervalMs: 150,
@@ -40,6 +47,9 @@ const elements = {
   imageUpdated: document.getElementById('image-updated'),
   imageResolution: document.getElementById('image-resolution'),
   cameraFrame: document.getElementById('camera-frame'),
+  debugFrameSlidingWindow: document.getElementById('debug-frame-sliding_window'),
+  debugFrameLaneEdge: document.getElementById('debug-frame-lane_edge'),
+  debugFrameYolo: document.getElementById('debug-frame-yolo'),
   recordBadge: document.getElementById('record-badge'),
   recordBadgeLabel: document.getElementById('record-badge-label'),
   controlCard: document.getElementById('control-card'),
@@ -51,6 +61,22 @@ const elements = {
   steeringBar: document.getElementById('steering-bar'),
   steeringBarFill: document.getElementById('steering-bar-fill'),
   steeringValue: document.getElementById('steering-value'),
+  drivedbgCard: document.getElementById('drivedbg-card'),
+  drivedbgChip: document.getElementById('drivedbg-chip'),
+  drivedbgUpdated: document.getElementById('drivedbg-updated'),
+  laneDetectedFlag: document.getElementById('lane-detected-flag'),
+  laneDetectedLabel: document.getElementById('lane-detected-label'),
+  confidenceMeterFill: document.getElementById('confidence-meter-fill'),
+  confidenceValue: document.getElementById('confidence-value'),
+  offsetBar: document.getElementById('offset-bar'),
+  offsetBarFill: document.getElementById('offset-bar-fill'),
+  offsetValue: document.getElementById('offset-value'),
+  headingBar: document.getElementById('heading-bar'),
+  headingBarFill: document.getElementById('heading-bar-fill'),
+  headingValue: document.getElementById('heading-value'),
+  drivedbgSteeringBar: document.getElementById('drivedbg-steering-bar'),
+  drivedbgSteeringBarFill: document.getElementById('drivedbg-steering-bar-fill'),
+  drivedbgSteeringValue: document.getElementById('drivedbg-steering-value'),
   storageCard: document.getElementById('storage-card'),
   storageChip: document.getElementById('storage-chip'),
   storageValue: document.getElementById('storage-value'),
@@ -64,6 +90,7 @@ const elements = {
   graphSummary: document.getElementById('graph-summary'),
 };
 
+let imageRequestInFlight = false;
 let debugImageRequestInFlight = false;
 
 function clampPercent(value) {
@@ -417,6 +444,74 @@ function renderControl(data) {
   setControlBar(elements.steeringBar, elements.steeringBarFill, data.steering, hasData);
 }
 
+function getLaneStatusState(data) {
+  if (!data.has_data) {
+    return 'waiting';
+  }
+
+  if (data.is_stale) {
+    return 'stale';
+  }
+
+  return 'live';
+}
+
+// Draw a 0-centered bar for a real-world value normalized by fullScale.
+function setScaledBar(barElement, fillElement, value, fullScale, hasData) {
+  const normalized = (hasData && value !== null && value !== undefined)
+    ? value / fullScale
+    : null;
+  setControlBar(barElement, fillElement, normalized, hasData);
+}
+
+function renderDriveDebug(laneData, controlData) {
+  if (!elements.drivedbgCard) {
+    return;
+  }
+
+  const state = getLaneStatusState(laneData);
+  const hasLane = Boolean(laneData.has_data);
+
+  setCardState(elements.drivedbgCard, state);
+  elements.drivedbgChip.textContent = getControlLabel(state);
+  elements.drivedbgUpdated.textContent = formatUpdatedAt(laneData.updated_at);
+
+  // lane_detected — the "did perception see a lane" flag.
+  const detected = laneData.lane_detected;
+  const detectedKnown = hasLane && detected !== null && detected !== undefined;
+  elements.laneDetectedFlag.classList.remove('is-detected', 'is-lost');
+  if (detectedKnown) {
+    elements.laneDetectedFlag.classList.add(detected ? 'is-detected' : 'is-lost');
+    elements.laneDetectedLabel.textContent = detected ? 'DETECTED' : 'LOST';
+  } else {
+    elements.laneDetectedLabel.textContent = '--';
+  }
+
+  // confidence — 0..1 left-fill meter.
+  const confKnown = hasLane && laneData.confidence !== null && laneData.confidence !== undefined;
+  const confPercent = confKnown ? clampPercent(laneData.confidence * 100) : 0;
+  elements.confidenceMeterFill.style.width = `${confPercent}%`;
+  elements.confidenceValue.textContent = confKnown ? Number(laneData.confidence).toFixed(2) : '--';
+
+  // lateral_offset [m] — signed, +left.
+  const offset = laneData.lateral_offset;
+  const offsetKnown = hasLane && offset !== null && offset !== undefined;
+  setScaledBar(elements.offsetBar, elements.offsetBarFill, offset, OFFSET_FULL_SCALE_M, offsetKnown);
+  elements.offsetValue.textContent = offsetKnown ? `${Number(offset) >= 0 ? '+' : ''}${Number(offset).toFixed(2)} m` : '--.--';
+
+  // heading_error — stored in rad, shown in deg, +left.
+  const headingRad = laneData.heading_error;
+  const headingKnown = hasLane && headingRad !== null && headingRad !== undefined;
+  const headingDeg = headingKnown ? Number(headingRad) * RAD_TO_DEG : null;
+  setScaledBar(elements.headingBar, elements.headingBarFill, headingDeg, HEADING_FULL_SCALE_DEG, headingKnown);
+  elements.headingValue.textContent = headingKnown ? `${headingDeg >= 0 ? '+' : ''}${headingDeg.toFixed(1)}°` : '--.--';
+
+  // steering — control output, reused from the /control stream.
+  const controlHasData = Boolean(controlData.has_data);
+  setControlBar(elements.drivedbgSteeringBar, elements.drivedbgSteeringBarFill, controlData.steering, controlHasData);
+  elements.drivedbgSteeringValue.textContent = formatControlValue(controlData.steering, controlHasData);
+}
+
 function renderRecording(data) {
   const isRecording = Boolean(data.is_recording);
 
@@ -440,6 +535,9 @@ function renderOffline() {
   setCardState(elements.batteryCard, 'offline');
   setCardState(elements.imageCard, 'offline');
   setCardState(elements.controlCard, 'offline');
+  if (elements.drivedbgCard) {
+    setCardState(elements.drivedbgCard, 'offline');
+  }
   setCardState(elements.storageCard, 'offline');
   if (elements.graphCard) {
     setCardState(elements.graphCard, 'offline');
@@ -447,6 +545,9 @@ function renderOffline() {
   elements.batteryChip.textContent = 'OFFLINE';
   elements.imageChip.textContent = 'OFFLINE';
   elements.controlChip.textContent = 'OFFLINE';
+  if (elements.drivedbgChip) {
+    elements.drivedbgChip.textContent = 'OFFLINE';
+  }
   elements.storageChip.textContent = 'OFFLINE';
   if (elements.graphChip) {
     elements.graphChip.textContent = 'OFFLINE';
@@ -455,6 +556,9 @@ function renderOffline() {
   elements.batteryUpdated.textContent = 'Unable to reach monitor server';
   elements.imageUpdated.textContent = 'Unable to reach monitor server';
   elements.controlUpdated.textContent = 'Unable to reach monitor server';
+  if (elements.drivedbgUpdated) {
+    elements.drivedbgUpdated.textContent = 'Unable to reach monitor server';
+  }
   elements.storageUpdated.textContent = 'Unable to reach monitor server';
   if (elements.graphUpdated) {
     elements.graphUpdated.textContent = 'Unable to reach monitor server';
@@ -497,12 +601,32 @@ async function fetchStatus() {
     renderBattery(payload.battery || {});
     renderImage(payload.image || {});
     renderControl(payload.control || {});
+    renderDriveDebug(payload.lane_status || {}, payload.control || {});
     renderRecording(payload.recording || {});
     renderStorage(payload.storage || {});
   } catch (error) {
     console.error('Failed to fetch monitor status', error);
     renderOffline();
   }
+}
+
+function refreshCameraFrame() {
+  if (imageRequestInFlight) {
+    return;
+  }
+
+  imageRequestInFlight = true;
+
+  const image = new Image();
+  image.onload = () => {
+    elements.cameraFrame.src = image.src;
+    imageRequestInFlight = false;
+  };
+  image.onerror = () => {
+    elements.cameraFrame.src = config.placeholderUrl;
+    imageRequestInFlight = false;
+  };
+  image.src = `${config.frameEndpoint}?t=${Date.now()}`;
 }
 
 function refreshImageByEndpoint(targetElement, endpoint) {
@@ -520,26 +644,15 @@ function refreshImageByEndpoint(targetElement, endpoint) {
   image.src = `${endpoint}?t=${Date.now()}`;
 }
 
-function refreshCameraFrame() {
-  const endpoint = config.frameEndpoint || '/api/frame';
-  refreshImageByEndpoint(elements.cameraFrame, endpoint);
-}
-
 function refreshDebugFrames() {
   if (!config.debugImageEnabled || debugImageRequestInFlight) {
     return;
   }
 
-  const channels = Array.isArray(config.debugChannels) ? config.debugChannels : [];
-  if (!channels.length) {
-    return;
-  }
-
   debugImageRequestInFlight = true;
-  channels.forEach((channel) => {
-    const targetElement = document.getElementById(`debug-frame-${channel.key}`);
-    refreshImageByEndpoint(targetElement, channel.endpoint);
-  });
+  refreshImageByEndpoint(elements.debugFrameSlidingWindow, config.debugFrameSlidingWindowEndpoint);
+  refreshImageByEndpoint(elements.debugFrameLaneEdge, config.debugFrameLaneEdgeEndpoint);
+  refreshImageByEndpoint(elements.debugFrameYolo, config.debugFrameYoloEndpoint);
   debugImageRequestInFlight = false;
 }
 

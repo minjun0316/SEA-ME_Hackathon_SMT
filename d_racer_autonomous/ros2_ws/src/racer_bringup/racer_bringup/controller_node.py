@@ -95,6 +95,7 @@ from racer_msgs.msg import DriveCommand, LaneStatus  # noqa: E402
 
 from core import path_factory  # noqa: E402
 from core.config_schema import load_config  # noqa: E402
+from core.planning.stopline_maneuver import StoplineManeuver  # noqa: E402
 from core.control.lateral_pd import LateralPDController  # noqa: E402
 from core.control.pure_pursuit import PurePursuitController  # noqa: E402
 from core.control.speed_controller import SpeedController  # noqa: E402
@@ -172,6 +173,7 @@ class ControllerNode(Node):
         self._drive_cmd = None           ##< 최신 DriveCommand(게이트). 없으면 게이트 통과.
         self._drive_cmd_time = None      ##< 최신 DriveCommand 수신 시각(stale 판정).
         self._last_steer = None          ##< 마지막 발행 조향(정지 시 유지용).
+        self._maneuver_active_prev = False  ##< 직전 스텝 기동 활성(종료 edge서 PD reset).
 
         # --- core 설정 로드 (vehicle.yaml + controller.yaml 병합) ---
         config_files = self._resolve_config_files()
@@ -181,8 +183,11 @@ class ControllerNode(Node):
         # 튜닝 편의: `racer-run pd_k_heading:=0.4`처럼 파일 안 고치고 즉석 스윕.
         # 비워두면(기본 '') YAML 값을 그대로 쓴다. 좋은 값이 나오면 YAML에 박아 영구화.
         lpd = self.config.lateral_pd
-        for _name in ('steering_sign', 'k_cross', 'k_heading', 'k_deriv',
-                      'deriv_smoothing', 'max_offset', 'steering_smoothing'):
+        for _name in ('steering_sign', 'k_cross', 'k_cross_kappa', 'k_cross_max',
+                      'k_heading', 'k_deriv',
+                      'deriv_smoothing', 'max_offset', 'steering_smoothing',
+                      'k_ff', 'curvature_smoothing', 'curvature_deadband',
+                      'curvature_preview'):
             self.declare_parameter(f'pd_{_name}', '')
             _v = str(self.get_parameter(f'pd_{_name}').value).strip()
             if _v:
@@ -191,8 +196,24 @@ class ControllerNode(Node):
                     f'  lateral_pd.{_name} = {float(_v)} (CLI 오버라이드, YAML 무시)')
         self.get_logger().info(
             f'  lateral_pd 활성값: sign={lpd.steering_sign} k_cross={lpd.k_cross} '
+            f'k_cross_kappa={lpd.k_cross_kappa} k_cross_max={lpd.k_cross_max} '
             f'k_heading={lpd.k_heading} k_deriv={lpd.k_deriv} '
-            f'smooth={lpd.steering_smoothing} max_off={lpd.max_offset}')
+            f'smooth={lpd.steering_smoothing} max_off={lpd.max_offset} '
+            f'k_ff={lpd.k_ff} curv_smooth={lpd.curvature_smoothing} '
+            f'curv_db={lpd.curvature_deadband} curv_prev={lpd.curvature_preview}')
+
+        # --- 정지선 개루프 고정스티어 기동 (로터리 진입/탈출) ---
+        # on/off는 운영 플래그 → ROS 파라미터(런치 인자). 튜닝값은 controller.yaml.
+        self.declare_parameter('stopline_maneuver_enable', False)
+        self.maneuver_enable = bool(
+            self.get_parameter('stopline_maneuver_enable').value)
+        self.maneuver = StoplineManeuver(self.config.stopline_maneuver)
+        if self.maneuver_enable:
+            smc = self.config.stopline_maneuver
+            self.get_logger().info(
+                f'  stopline_maneuver ON: steer={smc.steer} dur={smc.duration_sec}s '
+                f'1st_dir={smc.first_dir}(좌+) 2nd_dir={smc.second_dir}(우-) '
+                f'debounce={smc.debounce_sec}s max_count={smc.max_count}')
 
         # --- core 객체 구성 ---
         self.path = path_factory.make_path(self.path_name)
@@ -235,10 +256,16 @@ class ControllerNode(Node):
                 status_topic = str(self.get_parameter('lane_status_topic').value)
                 self.create_subscription(
                     LaneStatus, status_topic, self._on_lane_status, 1)
+                # 곡률 피드포워드(k_ff>0)용 lane_path도 구독(best-effort, 인지 §3).
+                # 없거나 끊겨도 조향은 lane_status로 계속 — κ=0 폴백(순수PD). 조향
+                # 입력은 여전히 lane_status라 watchdog은 lane_status 기준(변경 없음).
+                lane_topic = str(self.get_parameter('lane_path_topic').value)
+                self.create_subscription(
+                    PathMsg, lane_topic, self._on_lane_path, best_effort_q)
                 self.get_logger().info(
                     f'source=topic, lateral_controller=lateral_pd → 구독 '
-                    f'lane_status={status_topic}, drive_command={cmd_topic}, '
-                    f'lane_timeout={self.lane_timeout}s')
+                    f'lane_status={status_topic}, lane_path={lane_topic}(κ ff), '
+                    f'drive_command={cmd_topic}, lane_timeout={self.lane_timeout}s')
             else:
                 # pure_pursuit: lane_path(인지가 best-effort 발행 §3) → best-effort로 맞춤.
                 lane_topic = str(self.get_parameter('lane_path_topic').value)
@@ -313,6 +340,25 @@ class ControllerNode(Node):
             return None, 'lane_lost'
         return self._lane_status, None
 
+    def _near_field_curvature(self):
+        """@brief lateral_pd 곡률 피드포워드용 근거리 부호곡률 κ [1/m].
+
+        @details lane_path(topic)가 있고 신선(<lane_timeout)하면 차량 원점 최근접
+        부터 curvature_preview[m] 구간의 평균 부호곡률을 반환. 없거나 끊기면 0.0
+        (피드포워드 off → 순수 PD로 안전 degrade). lane_path는 조향 주입력이 아니라
+        보조 신호라 여기서 정지판정은 하지 않는다(정지판정은 lane_status가 담당).
+        """
+        if self._topic_path is None or self._topic_path_time is None:
+            return 0.0
+        age = (self.get_clock().now() - self._topic_path_time).nanoseconds * 1e-9
+        if age > self.lane_timeout:
+            return 0.0
+        path = self._topic_path
+        # 차량은 로컬 원점(뒷차축). 최근접부터 preview 구간 평균 부호곡률.
+        idx = path.nearest_index(self.pose.x, self.pose.y)
+        return path.mean_signed_curvature_ahead(
+            idx, float(self.config.lateral_pd.curvature_preview))
+
     def _select_path(self):
         """@brief 이번 주기 사용할 경로와 정지사유를 반환. @return (path, stop_reason|None)."""
         if self.source == 'static':
@@ -356,22 +402,60 @@ class ControllerNode(Node):
                     gate_stop = True
                     gate_reason = 'gate'
 
-        stop = (stop_reason is not None) or gate_stop
+        # --- 정지선 개루프 고정스티어 기동 (아루코 게이트 정지가 아닐 때만 진행) ---
+        # 활성 기동 중이면 차선 소실 watchdog(stop_reason)을 무시하고 정해진 시간만큼
+        # 고정 조향으로 회전한다(로터리 진입=좌 / 탈출=우). 정지선 신호는 lateral_pd
+        # 모드의 lane_status에서 온다.
+        mvr_steer = None
+        if self.maneuver_enable and not gate_stop:
+            stop_line_now = bool(
+                self.use_lateral_pd and control_input is not None
+                and control_input.stop_line)
+            mvr_steer = self.maneuver.update(stop_line_now, self.dt)
+        maneuver_active = mvr_steer is not None
+        # 기동 종료 edge(활성→비활성)에서 PD 내부상태 리셋 → 폐루프 복귀 시 조향 튐 방지.
+        if self._maneuver_active_prev and not maneuver_active:
+            self.lat.reset()
+        self._maneuver_active_prev = maneuver_active
+
         dbg = None  # 주행 중이면 로그용 상세 문자열, 정지면 None.
 
-        if stop or control_input is None:
+        if gate_stop:
+            # 판단(아루코) 정지: throttle=0, 조향은 마지막값 유지(없으면 트림=중립).
+            steering = (self._last_steer if self._last_steer is not None
+                        else float(self.config.vehicle.steer_trim))
+            throttle = 0.0
+        elif maneuver_active:
+            # 개루프 고정스티어: 트림 실어 발행(규칙 #6), watchdog 무시하고 주행.
+            steering = float(np.clip(
+                float(self.config.vehicle.steer_trim) + float(mvr_steer),
+                -1.0, 1.0))
+            self._last_steer = steering
+            if self.enable_drive:
+                throttle = float(max(-self.throttle_limit,
+                                     min(self.throttle_limit,
+                                         self.drive_throttle * speed_scale)))
+            else:
+                throttle = 0.0
+            dbg = (f'steer_raw={float(mvr_steer):+.3f} '
+                   f'count={self.maneuver.count}')
+        elif (stop_reason is not None) or control_input is None:
             # 정지: throttle=0, 조향은 마지막값 유지(없으면 트림=중립).
             steering = (self._last_steer if self._last_steer is not None
                         else float(self.config.vehicle.steer_trim))
             throttle = 0.0
         else:
             if self.use_lateral_pd:
-                # 근거리 PD: lane_status의 offset+heading으로 조향(경로/pose 불필요).
+                # 근거리 PD: lane_status의 offset+heading으로 조향. 곡률 피드포워드는
+                # lane_path 근거리 κ(있으면), 없으면 0(순수 PD).
+                kappa = self._near_field_curvature()
                 lat = self.lat.compute(float(control_input.lateral_offset),
-                                       float(control_input.heading_error), self.dt)
+                                       float(control_input.heading_error),
+                                       self.dt, curvature=kappa)
                 steering = float(lat.steering_norm)
                 dbg = (f'off={lat.lateral_offset:+.3f}m head={lat.heading_error:+.3f}rad '
-                       f'pC={lat.p_cross:+.3f} pH={lat.p_heading:+.3f}')
+                       f'κ={lat.curvature:+.3f} pFF={lat.p_ff:+.3f} '
+                       f'kC={lat.k_cross_eff:.2f} pC={lat.p_cross:+.3f} pH={lat.p_heading:+.3f}')
             else:
                 pp = self.pp.compute(self.pose, control_input, self._last_speed)
                 sp = self.speed.compute(pp.curvature, self._last_speed, self.dt)
@@ -398,7 +482,10 @@ class ControllerNode(Node):
 
         # 로그: 1초마다 또는 상태/조향 변화 시.
         self._tick += 1
-        reason = stop_reason or gate_reason or 'drive'
+        if maneuver_active:
+            reason = f'maneuver{self.maneuver.count}'
+        else:
+            reason = stop_reason or gate_reason or 'drive'
         if self._tick % self._log_period == 0 or (self._prev_log_steer != reason):
             self._prev_log_steer = reason
             if dbg is not None:

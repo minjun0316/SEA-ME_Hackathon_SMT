@@ -33,16 +33,14 @@ class FlaskServerThread(threading.Thread):
         self._server.shutdown()
 
 
-def create_app( state, page_title,
+def create_app( state, page_title, 
                 battery_topic, image_topic, control_topic, storage_path,
                 refresh_interval_ms, image_refresh_interval_ms,
-                header_logo_path, telechips_logo_path, topst_logo_path,
+                header_logo_path, telechips_logo_path, topst_logo_path, 
                 image_display_width, image_display_height,
-                debug_image, debug_channels, graph_snapshot_provider=None ):
-
-    debug_channels = list(debug_channels or [])
-    debug_topic_by_key = {ch['key']: ch['topic'] for ch in debug_channels}
-
+                debug_image, sliding_window_topic, lane_edge_topic,
+                yolo_topic, lane_status_topic, graph_snapshot_provider=None ):
+    
     app = Flask( __name__, template_folder=str(TEMPLATE_DIR), static_folder=str(STATIC_DIR),)
     app.json.sort_keys = False
 
@@ -62,7 +60,10 @@ def create_app( state, page_title,
             telechips_logo_url='/assets/telechips-logo',
             topst_logo_url='/assets/topst-logo',
             debug_image=debug_image,
-            debug_channels=debug_channels,
+            sliding_window_topic=sliding_window_topic,
+            lane_edge_topic=lane_edge_topic,
+            yolo_topic=yolo_topic,
+            lane_status_topic=lane_status_topic,
         )
 
     @app.get('/api/status')
@@ -96,14 +97,45 @@ def create_app( state, page_title,
             mimetype='image/svg+xml',
         )
 
-    @app.get('/api/frame/debug/<key>')
-    def api_frame_debug(key):
-        frame_bytes = state.get_debug_frame(key)
+    @app.get('/api/frame/sliding_window')
+    def api_frame_sliding_window():
+        frame_bytes = state.get_debug_frame('sliding_window')
         if frame_bytes is None:
-            placeholder_label = debug_topic_by_key.get(key, key)
             return Response(
                 build_camera_placeholder_svg(
-                    image_display_width, image_display_height, placeholder_label
+                    image_display_width, image_display_height, sliding_window_topic
+                ),
+                mimetype='image/svg+xml',
+            )
+
+        response = Response(frame_bytes, mimetype='image/jpeg')
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        return response
+
+    @app.get('/api/frame/lane_edge')
+    def api_frame_lane_edge():
+        frame_bytes = state.get_debug_frame('lane_edge')
+        if frame_bytes is None:
+            return Response(
+                build_camera_placeholder_svg(
+                    image_display_width, image_display_height, lane_edge_topic
+                ),
+                mimetype='image/svg+xml',
+            )
+
+        response = Response(frame_bytes, mimetype='image/jpeg')
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        return response
+
+    @app.get('/api/frame/yolo')
+    def api_frame_yolo():
+        frame_bytes = state.get_debug_frame('yolo')
+        if frame_bytes is None:
+            return Response(
+                build_camera_placeholder_svg(
+                    image_display_width, image_display_height, yolo_topic
                 ),
                 mimetype='image/svg+xml',
             )

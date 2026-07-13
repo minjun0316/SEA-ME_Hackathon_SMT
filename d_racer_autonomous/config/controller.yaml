@@ -40,12 +40,36 @@ speed:
 # δ = sign·(k_cross·offset + k_heading·heading + k_deriv·d(offset)/dt), +트림+smoothing.
 lateral_pd:
   steering_sign: 1.0            # +1=+오차→좌회전(D-Racer). ⚠️거치대서 반대로 꺾이면 -1로. 실차 첫 구동 전 방향 확인.
-  k_cross: 1.2                 # offset[m]→조향. 차선중심 복귀 P. 차선 이탈 복귀 느리면 ↑, 직선서 떨면 ↓.
-  k_heading: 0.4               # heading[rad]→조향. 0.8→0.6→0.4(07-10 실차: 0.6도 과조향). heading을 확 낮춰 원인 판별. 파고들면 ↓, 런와이드면 ↑. 브래킷: 0.8·0.6 오버 → 0.4서 (a)해결=답 0.4~0.5 (b)여전히 오버=heading 원인 아님(지연 오버슛→속도↓/β↑) (c)런와이드=0.5.
-  k_deriv: 0.0                 # d(offset)/dt 댐핑(선택). 근거리 노이즈 커서 기본 0. 저주파 꿀렁 남으면 소량(0.05) 시도.
-  deriv_smoothing: 0.3         # 미분 EMA(노이즈 저역통과). k_deriv 쓸 때만 의미.
+  # 곡률 피드포워드(07-12 신규): 커브 유지 조향을 오차 없이 미리 얹어 순수PD의 정상상태
+  # 오차(커브서 중심 못잡음) 제거. κ는 lane_path 근거리에서 부호 있게 유도(좌+/우−).
+  # lane_path 끊기면 κ=0로 폴백(순수PD로 안전 degrade). k_ff=0이면 완전 off(기존 동작).
+  k_ff: 0.0                    # 부호곡률 κ[1/m]→조향 이득. 0=off. 실차서 0.05~0.15부터 올려 커브 안쪽 붙을 때까지. 과하면 커브서 안쪽 파고듦(cut-in)→↓.
+  curvature_smoothing: 0.5     # κ EMA α. 0.3→0.5(07-12: 커브 exit서 κ 빨리 식혀 k_cross 부스트 잔상 제거=직선 복귀 빠르게). 작을수록 강한 저역통과(노이즈↓·지연↑). 직선서 ff 떨면 ↓.
+  curvature_deadband: 0.1      # 이하 |κ_s|는 직선 취급(ff=0). 직선 곡률노이즈 격리. 0.15→0.1(07-12 실차). 직선서 ff 들썩이면 ↑, 완만커브 반응 늦으면 ↓.
+  curvature_preview: 0.3       # 차량 앞 이 거리[m]의 부호곡률 평균을 ff/스케줄로. 0.38→0.3(07-12 실차). ⚠️lane_path 도달거리보다 짧아야 의미. 커브 진입 늦으면 ↑(먼저 봄), 너무 이르면 ↓.
+  k_cross: 0.75                # offset[m]→조향(직선 baseline). 차선중심 복귀 P. 0.4→0.5→0.65→0.75(07-12 실차). 커브 중심복귀는 아래 k_cross_kappa가 담당(직선은 이 값 그대로). 직선 꿀렁이면 ↓.
+  # k_cross 곡률 스케줄(07-12): k_cross=0.8 상수로 커브 중심은 잡았으나 직선 꿀렁 심해짐 →
+  # 직선(κ_eff=0)은 baseline 0.4 유지, 커브(κ_eff↑)만 부스트로 분리. κ는 lane_path 기하(조향 아님)
+  # + 데드밴드로 직선 격리라 PP 곡률게인식 발산 없음. k_cross_eff = min(k_cross + k_cross_kappa·|κ_eff|, k_cross_max).
+  k_cross_kappa: 0.85          # |κ_eff|당 k_cross 가산. 0.5→0.6→0.8→0.85(07-12 실차). 커브 κ_eff≈0.7~1.5면 +0.6~1.28 → 커브 k_cross≈1.2(max컷). 커브 중심 못잡으면 ↑, 커브서/exit서 떨면 ↓.
+  k_cross_max: 1.2             # 스케줄 k_cross 상한. 급커브서 과조향 방지.
+  k_heading: 0.22              # heading[rad]→조향. 0.8→0.6→0.4→0.3→0.22(07-12 실차: cut-in 억제·exit 조향 잔상↓). 파고들면 ↓, 런와이드면 ↑.
+  k_deriv: 0.06                # d(offset)/dt 댐핑(선택). 0.0→0.05→0.06(07-12 실차: 저주파 꿀렁 억제에 소량 효과 확인). 노이즈 심해지면 ↓, 꿀렁 남으면 ↑.
+  deriv_smoothing: 0.3         # 미분 EMA(노이즈 저역통과). k_deriv 쓸 때만 의미. (k_deriv=0.05로 활성)
   max_offset: 0.5             # offset 클램프[m]. 오검출 스파이크→과조향 방지.
-  steering_smoothing: 0.25     # 출력 β: out=(1-β)old+β new. 작을수록 부드럽(지연↑). 떨림 잡으려 0.3→0.25(07-10). 더 떨면 ↓, 굼뜨면 ↑.
+  steering_smoothing: 0.65     # 출력 β: out=(1-β)old+β new. 작을수록 부드럽(지연↑). 0.25→0.5→0.65(07-12 실차: 잘 됐던 값). 더 떨면 ↓, 굼뜨면 ↑.
+
+# --- 정지선 카운트 → 개루프 고정스티어 기동 (로터리 진입/탈출) ---
+# on/off는 운영 플래그라 controller_node ROS 파라미터(런치 인자) stopline_maneuver:=True 로 켠다.
+# 1번째 정지선→좌 고정스티어 duration_sec, 2번째→우 고정스티어(탈출). 개루프라 회전 중
+# 차선 놓쳐도 시간만큼 그대로 돈다(아루코 정지 게이트는 안전상 유지). @see core/planning/stopline_maneuver.py
+stopline_maneuver:
+  steer: 0.35        # 고정 조향 크기(정규화, 트림 전 raw). "조금". ⚠️실차 첫 튜닝 1순위 — 커브 못 돌면 ↑, 과회전이면 ↓.
+  duration_sec: 1.5  # 기동 유지 시간[s]. 회전 덜 되면 ↑, 지나치면 ↓.
+  first_dir: 1.0     # 1번째 정지선 방향(+1=좌회전).
+  second_dir: -1.0   # 2번째 정지선 방향(-1=우회전, 탈출).
+  debounce_sec: 1.5  # 정지선 카운트 최소 간격[s](한 정지선 중복 카운트 방지).
+  max_count: 2       # 이 카운트까지만 기동(이후 정지선 무시).
 
 battery:
   enabled: false                # 배터리 토픽(/battery_status) 연동 시 true.

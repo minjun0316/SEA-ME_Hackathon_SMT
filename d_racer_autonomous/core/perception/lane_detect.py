@@ -37,8 +37,13 @@ class LaneCalib:
     bev_matrix: Optional[Tuple[float, ...]] = None
 
     # --- HLS 색 임계 (H, L, S) ---
-    yellow_lo: Tuple[int, int, int] = (15, 80, 70)
-    yellow_hi: Tuple[int, int, int] = (35, 255, 255)
+    # 노랑 하한 완화(07-12): (15,80,70)→(12,45,45). 노랑 점선이 BEV에서 desaturate되어
+    # S가 ~67 근처로 깔리는데 기존 S≥70 문턱 바로 아래서 통째로 탈락했음(흰선은 L≥200
+    # 단일 게이트라 튼튼→노랑<흰→곡선서 노랑쪽 윈도우가 흰선으로 붕괴). image_raw 실측:
+    # 노랑 1355→4505px(3.3배), 흰선 프레임(straight11)은 834px로 여전히 노랑<흰이라
+    # yellow_dominant 미발동(흰선 안 버림). H도 12~38로 소폭 넓혀 조명 hue 이동 흡수.
+    yellow_lo: Tuple[int, int, int] = (12, 45, 45)
+    yellow_hi: Tuple[int, int, int] = (38, 255, 255)
     white_lo: Tuple[int, int, int] = (0, 160, 0)   ##< white_adaptive=False 폴백 하한
     white_hi: Tuple[int, int, int] = (180, 255, 100)  ##< 〃 상한
     # 흰색 마스크 방식. 기본 False = 원본 C++ 고정 임계(white_lo/hi = inRange((0,200,0),
@@ -57,13 +62,13 @@ class LaneCalib:
     white_l_floor: int = 90             ##< L 하한 최소(칠흑 프레임서 노이즈 폭주 방지)
     white_l_cap: int = 250              ##< L 하한 최대(과도한 상승 방지)
     white_s_hi: int = 75               ##< 흰색 최대 채도 S(무채색만 통과, 유채색 배제)
-    yellow_pixel_threshold: int = 30   ##< 노랑 픽셀 이 이상이면 노랑 우세 후보(절대 하한)
+    yellow_pixel_threshold: int = 20  ##< 노랑 픽셀 이 이상이면 노랑 우세 후보(절대 하한)
     # 노랑 '우세' 판정에 절대 픽셀수만 쓰면, 흰 차선의 warm-tint 조각(수백 px)이
     # 임계(30)를 넘겨 '노랑 우세'로 오판→흰 차선을 통째로 버린다(=흰선 인식 실패,
     # edges 뚝뚝 끊김). 그래서 상대 조건을 추가: 노랑이 흰색의 이 비율 이상일 때만
     # 노랑-only. 1.0=노랑이 흰색보다 많아야 우세(실제 노란 차선이면 성립, 흰선 조각은
     # 미달→노랑∪흰 유지). 노란 차선을 자꾸 놓치면 ↓(0.6), 흰선이 노랑에 밀리면 ↑.
-    yellow_over_white_ratio: float = 1.0
+    yellow_over_white_ratio: float = 0.6
 
     # --- 에지(Canny) 입력/임계 ---
     # 원래는 (마스킹 BGR→gray→blur→Canny). 마스크가 이미 이진 차선영역이라, blur한
@@ -71,8 +76,8 @@ class LaneCalib:
     edge_from_mask: bool = True        ##< True=정리한 lane_mask에 Canny(권장), False=옛 gray/blur
     edge_close_ksize: int = 3          ##< MORPH_CLOSE/dilate 커널 크기(작은 구멍 메우기)
     edge_dilate_iter: int = 1          ##< dilate 반복(차선 두껍게→창별 minpix 안정). 0=off
-    canny_lo: int = 30                 ##< Canny 하한(옛 50→30, 흰선 민감도↑). 노이즈면 ↑
-    canny_hi: int = 90                 ##< Canny 상한(옛 150→90). lo의 ~3배 유지 권장
+    canny_lo: int = 50                 ##< Canny 하한(옛 50→30, 흰선 민감도↑). 노이즈면 ↑
+    canny_hi: int = 150                 ##< Canny 상한(옛 150→90). lo의 ~3배 유지 권장
 
     # --- 슬라이딩 윈도우 ---
     nwindows: int = 9
@@ -96,7 +101,7 @@ class LaneCalib:
     # (윈도우 탐색 → 반대 차선/노이즈로의 점프 배제), 그 밴드 에지량이 seed_min_fill
     # 이상일 때만 섞는다(garbage 프레임은 유지). 커브에서 lock seed가 뒤처지는 지연을
     # 줄이는 용도. 켜면 지연↓·추종성↑, 과하면 노이즈로 seed가 떨릴 수 있어 0.1~0.3 권장.
-    seed_lock_hist_blend: float = 0.0
+    seed_lock_hist_blend: float = 0.3
     seed_hist_band_px: float = 60.0     ##< lock 블렌딩 시 prev 주변 peak 탐색 밴드(±px)
     # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
     # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
@@ -105,13 +110,33 @@ class LaneCalib:
     # 모두 달라붙는다. 두 피팅선 간격이 이 비율×lane_w보다 좁으면 '같은 선을 중복
     # 검출'로 보고 단일 차선으로 강등한다(→ 곡선방향 기반 안쪽 복원).
     lane_collapse_frac: float = 0.5
+    # --- 노랑 우선 단일선 추종(07-12) --------------------------------- #
+    # 곡선서 노랑이 잠깐 사라지면 흰선으로 기준이 넘어가 이탈하던 문제 해결:
+    # 노란선 '하나'를 색 분리 edge에서 단일 슬라이딩윈도우로 추적하고, 중심선은
+    # 노란선 ± 차선폭/2 로 오프셋한다(좌/우 두 창이 안 싸워 collapse도 원천 제거).
+    # 노랑 소실 시 yellow_hold_frames 동안 직전 노랑 피팅을 전방연장해 '예측 유지'
+    # (흰선으로 절대 안 넘어감), 그 이상 없으면 그때만 흰선+반대오프셋 폴백. 노랑 복귀 즉시 재고정.
+    follow_yellow: bool = True   ##< False=옛 좌/우 midpoint(_sliding_window) 경로로 폴백
+    yellow_side: str = "auto"    ##< 노랑이 주행선 기준 어느 쪽 경계: left|right|auto(둘다 보일 때 학습)
+    yellow_hold_frames: int = 8  ##< 노랑 소실 후 마지막 피팅으로 예측 유지할 최대 프레임(초과→흰 폴백)
+    yellow_min_windows: int = 2  ##< 단일선 유효 판정 최소 검출 윈도우(피팅 최소점=이 값)
+
     # 중심선 노이즈 완화: 경로점을 다항식(y~x)으로 피팅해 매끄럽게. 슬라이딩윈도우
     # 창별 흔들림이 조향 휘청임으로 이어지는 걸 방지(직선·커브 공통). order 2면 곡선까지.
     path_smooth: bool = True
     path_smooth_order: int = 2
 
-    # --- 정지선(Hough) ---
-    stopline_len_threshold: float = 150.0
+    # --- 정지선(행별 색상 커버리지 밴드) ---
+    # BEV 하단 ROI에서 "가로로 길게 정지선색"인 행이 여러 개 모이면 정지선. 차선은
+    # BEV서 세로라 행 커버리지가 낮고, 정지선(가로띠)만 높다 → 차선/노이즈와 잘 분리.
+    # 색 마스크는 stopline_color로 선택(실트랙 정지선=노랑). 차선도 노랑이지만 세로라
+    # 행 커버리지가 낮아 정지선(가로띠)과 구분된다. @see _stopline
+    stopline_color: str = "yellow"       ##< 정지선 색: yellow|white|both. 실트랙 정지선=노랑.
+    stopline_roi_h: int = 90             ##< 하단 ROI 높이[px](정지선 탐색 구간).
+    stopline_row_coverage: float = 0.45  ##< 한 행이 이 비율 이상 정지선색이면 후보 행(하한).
+    stopline_max_width_m: float = 0.0    ##< 가로폭 상한[m]: 한 행의 '연속' 정지선색 폭이 이 값 초과면 가로로 너무 긺→후보 제외(m_per_px_lateral로 px 환산). 0=상한없음. 실측 정지선폭=0.35.
+    stopline_min_rows: int = 6           ##< 후보 행이 이만큼 이상이면 정지선 검출.
+    stopline_len_threshold: float = 150.0  ##< (구) Hough 합산길이 임계 — 커버리지 방식으로 대체, 미사용(노드 호환용 잔존).
 
     # --- 픽셀→미터(BEV 기준). 캘리브 전 잠정값 → 트랙 튜닝 ---
     m_per_px_forward: float = 0.005    ##< BEV 세로 1px 당 전방 거리[m]
@@ -133,6 +158,9 @@ class LaneResult:
     heading_error: float = 0.0     ##< [rad]
     stop_line: bool = False
     stop_line_dist: float = -1.0   ##< [m], 미검출 -1.0
+    # 진단(계약 밖, 튜닝용): 왜 검출/미검출인지 숫자로 확인.
+    stopline_cov_max: float = 0.0  ##< 정지선 ROI 행 커버리지 최댓값(0~1). row_coverage 임계와 비교.
+    stopline_n_band: int = 0       ##< 커버리지 임계 넘은 행수. min_rows 임계와 비교.
     yellow_detected: bool = False
     yellow_confidence: float = 0.0
     white_detected: bool = False
@@ -155,6 +183,13 @@ class LaneDetector:
         self._last_rightx = 0.0
         self._last_conf = 0.0        ##< 직전 프레임 confidence. seed lock/lost 판정용.
         self._lane_width_px = None   ##< 두 선 다 보일 때 학습한 차선폭[px]. None이면 config 기본값.
+        # --- 노랑 우선 단일선 추종 상태(follow_yellow) ---
+        self._last_yellow_x = None   ##< 직전 노랑 near-x(단일선 seed)
+        self._last_white_x = None    ##< 직전 흰 near-x(폴백 seed)
+        self._last_yellow_fit = None ##< (line_over_windows, cys). 소실 시 hold 예측용.
+        self._last_yellow_frac = 0.0 ##< 직전 노랑 검출 창비율(hold conf 감쇠 기준)
+        self._yellow_age = 999       ##< 노랑 마지막 검출 이후 프레임(0=이번 프레임 검출)
+        self._yellow_side = None     ##< 학습된 노랑 쪽 부호(+1=노랑이 좌경계, -1=우경계)
 
     # ------------------------------------------------------------------ #
     def detect(self, frame: np.ndarray, want_debug: bool = False) -> LaneResult:
@@ -190,6 +225,19 @@ class LaneDetector:
 
         debug = bev.copy() if want_debug else None
 
+        # 디버그 오버레이(방식 A): 노랑/흰 마스크를 슬라이딩윈도우와 '같은 화면'에서 대조할
+        # 수 있게 debug(=BEV)에 반투명 색으로 덧칠한다. 마스크는 이미 BEV 좌표라 정확히
+        # 정렬된다. 여기서 먼저 칠하고 아래에서 박스/중심선을 그려 그 위에 올라오므로
+        # 박스·선은 가려지지 않는다. yellow_dominant로 흰 마스크가 실제 lane_mask에서
+        # 빠지더라도, '왜 노랑 우세로 판정됐는지'를 보려면 두 마스크 다 보이는 게 유용해
+        # 둘 다 칠한다(디버그 전용, 제어에는 무관). 별도 스트림이 아니라 같은 JPEG 위 덧칠
+        # 이라 브라우저 폴링/대역폭 부담은 사실상 늘지 않는다.
+        if debug is not None:
+            overlay = debug.copy()
+            overlay[yellow > 0] = (255, 0, 128)   # 노랑 마스크 → 보라
+            overlay[white > 0] = (0, 255, 0)      # 흰 마스크 → 초록
+            cv2.addWeighted(overlay, 0.4, debug, 0.6, 0.0, dst=debug)
+
         # --- 중심선 점열(BEV px, near→far) + confidence ---
         centerline_px, confidence = self._sliding_window(edges, debug)
         res.confidence = confidence
@@ -210,8 +258,10 @@ class LaneDetector:
             res.num_points = 0
 
         # --- 정지선: 검출 + 거리[m] ---
-        detected, row_px = self._stopline(bev, debug)
+        detected, row_px, cov_max, n_band = self._stopline(bev, debug)
         res.stop_line = detected
+        res.stopline_cov_max = cov_max
+        res.stopline_n_band = n_band
         if detected and row_px >= 0.0:
             res.stop_line_dist = c.x_near_m + (h - row_px) * c.m_per_px_forward
         else:
@@ -556,33 +606,83 @@ class LaneDetector:
         row = h - (x - c.x_near_m) / c.m_per_px_forward if c.m_per_px_forward else h
         return (int(round(col)), int(round(row)))
 
+    @staticmethod
+    def _longest_run(row_bool: np.ndarray) -> int:
+        """@brief 불리언 1행에서 True가 '연속'으로 이어진 최대 길이[px]. @return int.
+        @details 정지선 가로폭(연속 색 띠 길이) 측정용. 경계에 0을 덧대 diff로 run
+        경계를 찾고 (끝-시작) 최댓값을 취한다. 빈 행이면 0.
+        """
+        if not row_bool.any():
+            return 0
+        edges = np.diff(np.concatenate(([0], row_bool.astype(np.int8), [0])))
+        starts = np.nonzero(edges == 1)[0]
+        ends = np.nonzero(edges == -1)[0]
+        return int((ends - starts).max())
+
     def _stopline(self, bev: np.ndarray, debug):
-        """@brief 정지선 검출 + 최근접 정지선의 BEV 행(row). @return (detected, row|-1)."""
+        """@brief 정지선 검출 + 최근접 정지선의 BEV 행(row). @return (detected, row|-1).
+
+        @details 하단 ROI에서 **행별 정지선색 커버리지**로 검출한다. 색은
+        stopline_color(yellow|white|both, 실트랙 기본 yellow). 정지선은 화면을
+        가로지르는 색 띠라 각 행의 정지선색 픽셀이 폭의 큰 비율을 덮는다(row_coverage↑).
+        반면 차선은 BEV에서 세로라(같은 노랑이라도) 한 행에서 좁게만 걸려 커버리지가
+        낮다 → 차선/노이즈와 강하게 분리된다. 후보 행이 min_rows 이상이면 검출, 가장
+        바닥에 가까운(=row 큰) 후보 행을 거리 산출용 최근접 행으로 반환한다.
+        debug가 있으면 검출 밴드에 빨간 박스를 그려 인식 여부를 눈으로 확인할 수 있다.
+        """
         c = self.calib
         h, w = bev.shape[:2]
-        y0 = max(0, h - 80)
+        roi_h = int(min(max(1, c.stopline_roi_h), h))
+        y0 = h - roi_h
         roi = bev[y0:h, :]
 
         hls = cv2.cvtColor(roi, cv2.COLOR_BGR2HLS)
-        white_mask = cv2.inRange(hls, np.array((0, 200, 0)), np.array((180, 255, 255)))
-        edges = cv2.Canny(white_mask, 100, 200)
+        # 정지선색 마스크 선택(실트랙 정지선=노랑). 차선도 노랑이지만 세로라 행
+        # 커버리지가 낮아 가로띠 정지선과 구분된다.
+        color = str(getattr(c, "stopline_color", "yellow")).lower()
+        yellow = cv2.inRange(hls, np.array(c.yellow_lo), np.array(c.yellow_hi))
+        if color == "white":
+            mask = self._white_mask(hls)
+        elif color == "both":
+            mask = cv2.bitwise_or(yellow, self._white_mask(hls))
+        else:  # "yellow"(기본)
+            mask = yellow
 
-        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 40,
-                                minLineLength=40, maxLineGap=5)
-        total_len = 0.0
+        # 행별 정지선색 커버리지(폭 대비 비율). 정지선 행은 폭을 넓게 덮는다.
+        mb = mask.astype(bool)
+        row_cov = mb.sum(axis=1) / float(max(1, w))
+        band = row_cov >= c.stopline_row_coverage
+
+        # 가로폭 상한: 실측 정지선폭(stopline_max_width_m)을 넘게 '연속'으로 뻗은 행은
+        # 정지선이 아님(벽/큰 얼룩/가로로 긴 노이즈)→후보 제외. 연속(run) 기준이라
+        # 멀리 떨어진 별도 노랑 얼룩이 합산돼 오제외되지 않는다. 0이면 상한 없음.
+        max_w_m = float(getattr(c, "stopline_max_width_m", 0.0) or 0.0)
+        if max_w_m > 0.0 and c.m_per_px_lateral > 0.0:
+            max_run_px = max_w_m / c.m_per_px_lateral
+            for r in np.nonzero(band)[0]:
+                if self._longest_run(mb[r]) > max_run_px:
+                    band[r] = False
+
+        n_band = int(band.sum())
+        detected = n_band >= c.stopline_min_rows
+        cov_max = float(row_cov.max()) if row_cov.size else 0.0  # 진단: 최고 행 커버리지.
+
         nearest_row = -1.0
-        if lines is not None and len(lines) > 0:
-            # HoughLinesP도 버전에 따라 (N,1,4)/(N,4) → (N,4)로.
-            for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):
-                angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
-                if abs(angle) < 10 or abs(angle) > 170:
-                    total_len += math.hypot(x2 - x1, y2 - y1)
-                    y_abs = (y1 + y2) * 0.5 + y0
-                    # 바닥에 가장 가까운(=row 큰) 수평선 유지
-                    if nearest_row < 0 or y_abs > nearest_row:
-                        nearest_row = float(y_abs)
-                    if debug is not None:
-                        cv2.line(debug, (x1, y1 + y0), (x2, y2 + y0), (0, 255, 255), 2)
+        if detected:
+            rows = np.nonzero(band)[0]
+            nearest_row = float(int(rows.max()) + y0)  # 바닥에 가장 가까운 후보 행.
 
-        detected = total_len > c.stopline_len_threshold
-        return (detected, nearest_row if detected else -1.0)
+            # 디버그: 검출 밴드에 빨간 박스(노란 정지선 위에서도 잘 보이게).
+            if debug is not None:
+                y1 = max(0, int(rows.min()) + y0 - 4)
+                y2 = min(h - 1, int(rows.max()) + y0 + 4)
+                band_mask = mask[int(rows.min()):int(rows.max()) + 1, :]
+                xs = np.nonzero(band_mask)[1]
+                if xs.size > 0:
+                    x1 = max(0, int(xs.min()) - 8)
+                    x2 = min(w - 1, int(xs.max()) + 8)
+                else:
+                    x1, x2 = 0, w - 1
+                cv2.rectangle(debug, (x1, y1), (x2, y2), (0, 0, 255), 3)  # BGR 빨강.
+
+        return (detected, nearest_row if detected else -1.0, cov_max, n_band)

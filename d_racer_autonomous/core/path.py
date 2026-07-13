@@ -42,7 +42,11 @@ class Path:
 
         self._points = pts
         self._cum_dist = self._cumulative_distance(pts)
-        self._curvature = self._compute_curvature(pts)
+        # 부호 있는 곡률(좌회전 +, 우회전 −)을 먼저 구하고, 크기는 그로부터 유도.
+        # 크기는 SpeedController/Adaptive Lookahead(방향 무관)가, 부호 있는 값은
+        # lateral_pd 곡률 피드포워드(좌/우 구분 필요)가 쓴다.
+        self._signed_curvature = self._compute_signed_curvature(pts)
+        self._curvature = np.abs(self._signed_curvature)
 
     # ------------------------------------------------------------------ #
     # Properties
@@ -59,8 +63,13 @@ class Path:
 
     @property
     def curvatures(self) -> np.ndarray:
-        """@brief 각 점에서의 곡률 κ [1/m] 배열 (N,)."""
+        """@brief 각 점에서의 곡률 크기 |κ| [1/m] 배열 (N,)."""
         return self._curvature
+
+    @property
+    def signed_curvatures(self) -> np.ndarray:
+        """@brief 각 점에서의 부호 있는 곡률 κ [1/m] 배열 (N,). 좌회전 +, 우회전 −."""
+        return self._signed_curvature
 
     def __len__(self) -> int:
         return self._points.shape[0]
@@ -95,9 +104,35 @@ class Path:
         return lo + int(np.argmin(d2))
 
     def curvature_at(self, index: int) -> float:
-        """@brief 인덱스 위치의 곡률 κ [1/m]."""
+        """@brief 인덱스 위치의 곡률 크기 |κ| [1/m]."""
         index = int(np.clip(index, 0, len(self) - 1))
         return float(self._curvature[index])
+
+    def signed_curvature_at(self, index: int) -> float:
+        """@brief 인덱스 위치의 부호 있는 곡률 κ [1/m] (좌회전 +, 우회전 −)."""
+        index = int(np.clip(index, 0, len(self) - 1))
+        return float(self._signed_curvature[index])
+
+    def mean_signed_curvature_ahead(self, from_index: int,
+                                    distance: float) -> float:
+        """@brief from_index부터 전방 호길이 distance[m]까지 부호 있는 곡률의 평균.
+
+        @param from_index 시작 인덱스(보통 nearest_index 결과).
+        @param distance   전방 preview 거리 [m]. <=0 이면 그 점의 부호곡률만.
+        @return 구간 평균 부호곡률 [1/m] (좌회전 +, 우회전 −).
+
+        @details lateral_pd 곡률 피드포워드용. 근거리 몇 점의 부호곡률을 평균해
+        한 점 차분 노이즈를 완화한다(부호를 살려 좌/우 커브를 구분). max|κ|가 아닌
+        평균을 쓰는 이유: 피드포워드는 '지금 얹을 조향'이라 대표 곡률이 맞고,
+        스파이크 한 점이 방향을 흔들지 않도록 하기 위함.
+        """
+        i0 = int(np.clip(from_index, 0, len(self) - 1))
+        if distance <= 0.0:
+            return float(self._signed_curvature[i0])
+        target_s = self._cum_dist[i0] + distance
+        i1 = int(np.searchsorted(self._cum_dist, target_s))
+        i1 = int(np.clip(i1, i0 + 1, len(self)))
+        return float(np.mean(self._signed_curvature[i0:i1]))
 
     def max_abs_curvature_ahead(self, from_index: int, distance: float) -> float:
         """@brief from_index부터 전방 호길이 distance[m]까지 구간의 max |κ| [1/m].
@@ -196,15 +231,17 @@ class Path:
         return np.column_stack([x_new, y_new])
 
     @staticmethod
-    def _compute_curvature(pts: np.ndarray) -> np.ndarray:
-        """@brief 1차/2차 차분 기반 이산 곡률 κ [1/m] 계산.
+    def _compute_signed_curvature(pts: np.ndarray) -> np.ndarray:
+        """@brief 1차/2차 차분 기반 이산 **부호 있는** 곡률 κ [1/m] 계산.
 
-        @details 매개변수 곡선의 곡률 공식
+        @details 매개변수 곡선의 부호 있는 곡률 공식
         @f[
-            \\kappa = \\frac{|x' y'' - y' x''|}{(x'^2 + y'^2)^{3/2}}
+            \\kappa = \\frac{x' y'' - y' x''}{(x'^2 + y'^2)^{3/2}}
         @f]
-        을 numpy.gradient(중심 차분)로 근사한다. 양 끝점은 한쪽 차분이라
-        값이 다소 불안정할 수 있어 호출부에서 인덱스를 클립해 사용한다.
+        을 numpy.gradient(중심 차분)로 근사한다. 좌표계(+y=좌측)에서 좌회전
+        (반시계)이 +, 우회전이 −. 크기 |κ|는 이 값의 절댓값으로 유도한다.
+        양 끝점은 한쪽 차분이라 값이 다소 불안정할 수 있어 호출부에서 인덱스를
+        클립해 사용한다.
         """
         x = pts[:, 0]
         y = pts[:, 1]
@@ -214,4 +251,4 @@ class Path:
         ddy = np.gradient(dy)
         denom = (dx * dx + dy * dy) ** 1.5
         denom = np.where(denom < 1e-9, 1e-9, denom)
-        return np.abs(dx * ddy - dy * ddx) / denom
+        return (dx * ddy - dy * ddx) / denom

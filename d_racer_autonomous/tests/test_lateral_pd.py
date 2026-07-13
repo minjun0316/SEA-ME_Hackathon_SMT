@@ -76,3 +76,66 @@ def test_derivative_filtered_and_zero_first_step():
     assert math.isclose(r0.d_cross, 0.0, abs_tol=1e-9)  # 첫 스텝 미분 없음
     r1 = ctrl.compute(0.2, 0.0, dt=0.1)                 # Δe=0.1, dt=0.1 → de/dt=1.0
     assert r1.d_cross > 0.0
+
+
+def test_curvature_feedforward_off_by_default():
+    """k_ff=0(기본)이면 κ를 줘도 피드포워드 기여 0 — 기존 순수 PD와 동일."""
+    ctrl = _ctrl(k_cross=0.0, k_heading=0.0)  # k_ff 기본 0
+    res = ctrl.compute(0.0, 0.0, dt=0.1, curvature=1.0)
+    assert math.isclose(res.p_ff, 0.0, abs_tol=1e-9)
+    assert math.isclose(res.steering_norm, 0.0, abs_tol=1e-9)
+
+
+def test_curvature_feedforward_steers_toward_curve():
+    """좌커브(+κ)면 +조향(좌), 우커브(−κ)면 −조향 — 오차 없이 커브 유지 조향."""
+    left = _ctrl(k_cross=0.0, k_heading=0.0, k_ff=0.5,
+                 curvature_smoothing=1.0).compute(0.0, 0.0, dt=0.1, curvature=1.0)
+    assert left.p_ff > 0.0 and left.steering_norm > 0.0
+    right = _ctrl(k_cross=0.0, k_heading=0.0, k_ff=0.5,
+                  curvature_smoothing=1.0).compute(0.0, 0.0, dt=0.1, curvature=-1.0)
+    assert right.p_ff < 0.0 and right.steering_norm < 0.0
+
+
+def test_curvature_deadband_isolates_straight_noise():
+    """데드밴드 이하 |κ|는 직선 취급 → ff 0(직선 곡률노이즈 격리)."""
+    ctrl = _ctrl(k_cross=0.0, k_heading=0.0, k_ff=1.0,
+                 curvature_smoothing=1.0, curvature_deadband=0.3)
+    res = ctrl.compute(0.0, 0.0, dt=0.1, curvature=0.2)  # |κ|<deadband
+    assert math.isclose(res.curvature, 0.0, abs_tol=1e-9)
+    assert math.isclose(res.p_ff, 0.0, abs_tol=1e-9)
+
+
+def test_k_cross_schedule_off_by_default():
+    """k_cross_kappa=0(기본)이면 κ와 무관하게 k_cross 상수 — 기존 동작."""
+    ctrl = _ctrl(k_cross=0.4, k_heading=0.0, curvature_smoothing=1.0)
+    res = ctrl.compute(0.1, 0.0, dt=0.1, curvature=1.0)
+    assert math.isclose(res.k_cross_eff, 0.4, rel_tol=1e-9)
+    assert math.isclose(res.p_cross, 0.4 * 0.1, rel_tol=1e-6)
+
+
+def test_k_cross_schedule_boosts_on_curve_not_straight():
+    """직선(κ_eff=0)은 baseline, 커브(κ_eff>0)는 k_cross 부스트."""
+    ctrl = _ctrl(k_cross=0.4, k_cross_kappa=0.5, k_cross_max=1.2,
+                 k_heading=0.0, curvature_smoothing=1.0, curvature_deadband=0.15)
+    straight = ctrl.compute(0.1, 0.0, dt=0.1, curvature=0.0)
+    assert math.isclose(straight.k_cross_eff, 0.4, rel_tol=1e-9)  # 직선 baseline
+    curve = ctrl.compute(0.1, 0.0, dt=0.1, curvature=1.0)  # κ_eff=1−0.15=0.85
+    assert math.isclose(curve.k_cross_eff, 0.4 + 0.5 * 0.85, rel_tol=1e-6)
+    assert curve.k_cross_eff > straight.k_cross_eff
+
+
+def test_k_cross_schedule_clamps_at_max():
+    """급커브서도 k_cross_max로 상한 클램프(과조향 방지)."""
+    ctrl = _ctrl(k_cross=0.4, k_cross_kappa=2.0, k_cross_max=1.0,
+                 k_heading=0.0, curvature_smoothing=1.0, curvature_deadband=0.0)
+    res = ctrl.compute(0.1, 0.0, dt=0.1, curvature=5.0)  # 부스트 크지만 max로 컷
+    assert math.isclose(res.k_cross_eff, 1.0, rel_tol=1e-9)
+
+
+def test_curvature_feedforward_respects_steering_sign():
+    """steering_sign=-1이면 같은 κ에 피드포워드도 반대 방향으로 조향."""
+    pos = _ctrl(k_cross=0.0, k_heading=0.0, k_ff=0.5, steering_sign=1.0,
+                curvature_smoothing=1.0).compute(0.0, 0.0, dt=0.1, curvature=1.0)
+    neg = _ctrl(k_cross=0.0, k_heading=0.0, k_ff=0.5, steering_sign=-1.0,
+                curvature_smoothing=1.0).compute(0.0, 0.0, dt=0.1, curvature=1.0)
+    assert math.isclose(pos.steering_norm, -neg.steering_norm, abs_tol=1e-9)

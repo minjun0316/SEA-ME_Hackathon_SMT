@@ -21,6 +21,37 @@ def test_circle_curvature_matches_inverse_radius():
     assert math.isclose(kappa, 1.0 / radius, rel_tol=0.05)
 
 
+def _arc(radius, left, n=400):
+    """전방(+x) 진행하며 좌(+y)/우(−y)로 도는 1/4원 호. left=True면 좌회전."""
+    theta = np.linspace(0.0, math.pi / 2, n)
+    x = radius * np.sin(theta)
+    y = (1.0 if left else -1.0) * radius * (1.0 - np.cos(theta))
+    return Path(np.column_stack([x, y]), resample_spacing=0.02)
+
+
+def test_signed_curvature_sign_left_positive_right_negative():
+    """+y=좌측 좌표계: 좌회전(반시계) κ>0, 우회전 κ<0. 피드포워드 방향의 근거."""
+    left = _arc(2.0, left=True)
+    right = _arc(2.0, left=False)
+    kl = np.median(left.signed_curvatures[5:-5])
+    kr = np.median(right.signed_curvatures[5:-5])
+    assert kl > 0.0 and math.isclose(kl, 0.5, rel_tol=0.1)   # 1/R = 0.5
+    assert kr < 0.0 and math.isclose(kr, -0.5, rel_tol=0.1)
+
+
+def test_signed_curvature_magnitude_matches_abs():
+    """부호곡률의 절댓값 = 크기 곡률(curvatures)."""
+    p = _arc(2.0, left=False)
+    assert np.allclose(np.abs(p.signed_curvatures), p.curvatures)
+
+
+def test_mean_signed_curvature_ahead_matches_direction():
+    """근거리 평균 부호곡률: 좌회전 호에서 +값(피드포워드가 좌조향을 얹도록)."""
+    left = _arc(2.0, left=True)
+    k = left.mean_signed_curvature_ahead(0, 0.5)
+    assert k > 0.0
+
+
 def test_lookahead_advances_by_arc_length():
     p = path_factory.straight(length=5.0, spacing=0.05)
     target = p.lookahead_point(0, 1.0)

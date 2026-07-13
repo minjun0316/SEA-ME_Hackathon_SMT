@@ -60,6 +60,10 @@ def generate_launch_description():
                               description='mission_cues_node(아루코 ID3 검출→정지신호). 정지엔 use_decision:=True 필요'),
         DeclareLaunchArgument('lane_config', default_value=lane_cfg,
                               description='lane_detect_node 파라미터 YAML'),
+        DeclareLaunchArgument('publish_debug', default_value='false',
+                              description='lane_detect 디버그 이미지 발행(웹 Sliding Window/Lane Edge 패널). '
+                                          '기본 off — 프레임당 JPEG 인코딩이 조향루프 rate를 갉아 과조향(07-10). '
+                                          '모니터로 인지 시각화할 때만 publish_debug:=true'),
         DeclareLaunchArgument('mission_cues_config', default_value=cues_cfg,
                               description='mission_cues_node 파라미터 YAML(ArUco 사전/ID)'),
         DeclareLaunchArgument('control_topic', default_value='/control'),
@@ -72,10 +76,18 @@ def generate_launch_description():
         DeclareLaunchArgument('throttle_limit', default_value='0.15'),
         DeclareLaunchArgument('lane_timeout', default_value='0.3',
                               description='lane_path/판단 끊김 판정[s] → 정지'),
+        DeclareLaunchArgument('stopline_maneuver', default_value='False',
+                              description='정지선 카운트→개루프 고정스티어 기동(로터리 진입/탈출). '
+                                          '1번째 정지선=좌 고정스티어 1.5s, 2번째=우(탈출). '
+                                          '튜닝값은 controller.yaml stopline_maneuver. 기본 off.'),
         # lateral_pd 게인 즉석 오버라이드(비우면 controller.yaml 값 사용). 튜닝 편의용.
         # 예: racer-run pd_k_heading:=0.4 pd_k_cross:=1.0
         DeclareLaunchArgument('pd_k_cross', default_value='',
-                              description='lateral_pd k_cross 오버라이드(offset[m]→조향, 중심복귀 P)'),
+                              description='lateral_pd k_cross 오버라이드(직선 baseline, offset[m]→조향, 중심복귀 P)'),
+        DeclareLaunchArgument('pd_k_cross_kappa', default_value='',
+                              description='lateral_pd k_cross 곡률 스케줄 이득(커브서 중심복귀 부스트, 직선 무영향)'),
+        DeclareLaunchArgument('pd_k_cross_max', default_value='',
+                              description='lateral_pd 스케줄된 k_cross 상한'),
         DeclareLaunchArgument('pd_k_heading', default_value='',
                               description='lateral_pd k_heading 오버라이드(heading[rad]→조향, 커브 주레버)'),
         DeclareLaunchArgument('pd_k_deriv', default_value='',
@@ -88,6 +100,15 @@ def generate_launch_description():
                               description='lateral_pd 출력 smoothing β 오버라이드'),
         DeclareLaunchArgument('pd_steering_sign', default_value='',
                               description='lateral_pd 조향부호 오버라이드(+1/-1)'),
+        # 곡률 피드포워드(07-12): 커브 유지 조향을 lane_path κ로 미리 얹어 커브 중심 잡음.
+        DeclareLaunchArgument('pd_k_ff', default_value='',
+                              description='lateral_pd 곡률 피드포워드 이득 오버라이드(0=off, 커브 안쪽 못붙으면 ↑)'),
+        DeclareLaunchArgument('pd_curvature_smoothing', default_value='',
+                              description='lateral_pd κ EMA 오버라이드(직선 ff 떨면 ↓)'),
+        DeclareLaunchArgument('pd_curvature_deadband', default_value='',
+                              description='lateral_pd κ 데드밴드 오버라이드(직선 격리)'),
+        DeclareLaunchArgument('pd_curvature_preview', default_value='',
+                              description='lateral_pd κ preview 거리[m] 오버라이드'),
     ]
 
     # 1) 카메라(키트) — 옵션
@@ -105,7 +126,12 @@ def generate_launch_description():
         executable='lane_detect_node',
         name='lane_detect_node',
         output='screen',
-        parameters=[LaunchConfiguration('lane_config')],
+        # lane.yaml 먼저 로드 → 뒤의 publish_debug 오버라이드가 이김(런치 인자로 토글).
+        parameters=[
+            LaunchConfiguration('lane_config'),
+            {'publish_debug': ParameterValue(
+                LaunchConfiguration('publish_debug'), value_type=bool)},
+        ],
     )
 
     # 2b) 미션신호 인지(옵션): 아루코 ID3 검출 → /perception/mission_cues.
@@ -147,16 +173,24 @@ def generate_launch_description():
             'drive_throttle': LaunchConfiguration('drive_throttle'),
             'throttle_limit': LaunchConfiguration('throttle_limit'),
             'lane_timeout': LaunchConfiguration('lane_timeout'),
+            'stopline_maneuver_enable': ParameterValue(
+                LaunchConfiguration('stopline_maneuver'), value_type=bool),
             # lateral_pd 게인 CLI 오버라이드(빈 문자열이면 노드가 YAML값 유지).
             # value_type=str로 강제 — 안 그러면 launch가 '0.4'를 double로 추론해
             # 노드의 string 선언과 타입 충돌. 노드가 문자열을 받아 float 파싱한다.
             'pd_k_cross': ParameterValue(LaunchConfiguration('pd_k_cross'), value_type=str),
+            'pd_k_cross_kappa': ParameterValue(LaunchConfiguration('pd_k_cross_kappa'), value_type=str),
+            'pd_k_cross_max': ParameterValue(LaunchConfiguration('pd_k_cross_max'), value_type=str),
             'pd_k_heading': ParameterValue(LaunchConfiguration('pd_k_heading'), value_type=str),
             'pd_k_deriv': ParameterValue(LaunchConfiguration('pd_k_deriv'), value_type=str),
             'pd_deriv_smoothing': ParameterValue(LaunchConfiguration('pd_deriv_smoothing'), value_type=str),
             'pd_max_offset': ParameterValue(LaunchConfiguration('pd_max_offset'), value_type=str),
             'pd_steering_smoothing': ParameterValue(LaunchConfiguration('pd_steering_smoothing'), value_type=str),
             'pd_steering_sign': ParameterValue(LaunchConfiguration('pd_steering_sign'), value_type=str),
+            'pd_k_ff': ParameterValue(LaunchConfiguration('pd_k_ff'), value_type=str),
+            'pd_curvature_smoothing': ParameterValue(LaunchConfiguration('pd_curvature_smoothing'), value_type=str),
+            'pd_curvature_deadband': ParameterValue(LaunchConfiguration('pd_curvature_deadband'), value_type=str),
+            'pd_curvature_preview': ParameterValue(LaunchConfiguration('pd_curvature_preview'), value_type=str),
         }],
     )
 

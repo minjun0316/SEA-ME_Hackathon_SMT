@@ -170,11 +170,9 @@ def make_test_app(graph_snapshot_provider=None):
         160,
         120,
         True,
-        [
-            {'key': 'grayscale', 'label': 'Grayscale', 'topic': '/opencv/image/grayscale'},
-            {'key': 'blur', 'label': 'Blur', 'topic': '/opencv/image/blur'},
-            {'key': 'edge', 'label': 'Edge', 'topic': '/opencv/image/edge'},
-        ],
+        '/opencv/image/grayscale',
+        '/opencv/image/blur',
+        '/opencv/image/edge',
         graph_snapshot_provider=graph_snapshot_provider,
     )
 

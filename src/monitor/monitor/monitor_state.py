@@ -4,15 +4,9 @@ import time
 
 
 class MonitorState:
-    def __init__( self, stale_timeout_sec, image_source_width, image_source_height,
-                  debug_keys=None ):
+    def __init__( self, stale_timeout_sec, image_source_width, image_source_height ):
         self._lock = threading.Lock()
         self._stale_timeout_sec = stale_timeout_sec
-
-        # 토픽 수신율(Hz) 미터: 이름별 최근 도착 시각(monotonic) 목록.
-        # 최근 _rate_window_sec 창의 도착 간격 평균으로 Hz를 낸다(ros2 topic hz 방식).
-        self._rate_window_sec = 5.0
-        self._rate_events = {}
 
         self._battery_status = None
         self._battery_updated_at = None
@@ -23,24 +17,43 @@ class MonitorState:
         self._image_height = image_source_height
         self._image_updated_at = None
         self._image_updated_monotonic = None
-        # 디버그 채널은 config(DEBUG_CHANNELS)로 정해지므로 키 목록을 받아 동적 초기화한다.
-        self._debug_keys = list(debug_keys or [])
-        self._debug_frames = {key: None for key in self._debug_keys}
-        self._debug_widths = {key: image_source_width for key in self._debug_keys}
-        self._debug_heights = {key: image_source_height for key in self._debug_keys}
-        self._debug_updated_at = {key: None for key in self._debug_keys}
-        self._debug_updated_monotonic = {key: None for key in self._debug_keys}
+        self._debug_frames = {
+            'sliding_window': None,
+            'lane_edge': None,
+            'yolo': None,
+        }
+        self._debug_widths = {
+            'sliding_window': image_source_width,
+            'lane_edge': image_source_width,
+            'yolo': image_source_width,
+        }
+        self._debug_heights = {
+            'sliding_window': image_source_height,
+            'lane_edge': image_source_height,
+            'yolo': image_source_height,
+        }
+        self._debug_updated_at = {
+            'sliding_window': None,
+            'lane_edge': None,
+            'yolo': None,
+        }
+        self._debug_updated_monotonic = {
+            'sliding_window': None,
+            'lane_edge': None,
+            'yolo': None,
+        }
 
         self._throttle = None
         self._steering = None
         self._control_updated_at = None
         self._control_updated_monotonic = None
 
-        # 인지→제어 핸드오프 경로(/perception/lane_path). detect()가 edge+sliding
-        # window+centerline을 한 콜백에서 계산·발행하므로 이 토픽 rate = 차선 인지 처리율.
-        self._lane_path_num_points = None
-        self._lane_path_updated_at = None
-        self._lane_path_updated_monotonic = None
+        self._lane_detected = None
+        self._lane_confidence = None
+        self._lateral_offset = None
+        self._heading_error = None
+        self._lane_status_updated_at = None
+        self._lane_status_updated_monotonic = None
 
         self._is_recording = False
         self._recording_updated_at = None
@@ -57,31 +70,6 @@ class MonitorState:
             return True
 
         return (time.monotonic() - updated_monotonic) > self._stale_timeout_sec
-
-    def _record_rate_locked(self, name, now_monotonic):
-        """@brief 수신 이벤트 1건 기록(호출자가 이미 lock 보유). 창 밖 샘플은 정리."""
-        events = self._rate_events.get(name)
-        if events is None:
-            events = []
-            self._rate_events[name] = events
-        events.append(now_monotonic)
-        cutoff = now_monotonic - self._rate_window_sec
-        while events and events[0] < cutoff:
-            events.pop(0)
-
-    def _hz_locked(self, name):
-        """@brief 최근 창의 도착 간격 평균으로 Hz 산출(호출자가 lock 보유). 샘플 부족 시 None."""
-        events = self._rate_events.get(name)
-        if not events:
-            return None
-        cutoff = time.monotonic() - self._rate_window_sec
-        recent = [t for t in events if t >= cutoff]
-        if len(recent) < 2:
-            return None
-        span = recent[-1] - recent[0]
-        if span <= 0.0:
-            return None
-        return (len(recent) - 1) / span
 
     def _format_gb(self, size_bytes):
         if size_bytes is None:
@@ -114,6 +102,15 @@ class MonitorState:
             self._steering = clamped_steering
             self._control_updated_at = datetime.now(timezone.utc)
             self._control_updated_monotonic = time.monotonic()
+
+    def update_lane_status(self, lane_detected, confidence, lateral_offset, heading_error):
+        with self._lock:
+            self._lane_detected = bool(lane_detected)
+            self._lane_confidence = max(0.0, min(1.0, float(confidence)))
+            self._lateral_offset = float(lateral_offset)
+            self._heading_error = float(heading_error)
+            self._lane_status_updated_at = datetime.now(timezone.utc)
+            self._lane_status_updated_monotonic = time.monotonic()
 
     def update_debug_image(self, image_key, frame_bytes, source_width, source_height):
         if image_key not in self._debug_frames:
@@ -173,6 +170,13 @@ class MonitorState:
             control_updated_at = self._control_updated_at
             control_updated_monotonic = self._control_updated_monotonic
 
+            lane_detected = self._lane_detected
+            lane_confidence = self._lane_confidence
+            lateral_offset = self._lateral_offset
+            heading_error = self._heading_error
+            lane_status_updated_at = self._lane_status_updated_at
+            lane_status_updated_monotonic = self._lane_status_updated_monotonic
+
             is_recording = self._is_recording
             recording_updated_at = self._recording_updated_at
             recording_updated_monotonic = self._recording_updated_monotonic
@@ -186,13 +190,14 @@ class MonitorState:
         battery_has_data = battery_status is not None
         image_has_data = image_updated_at is not None
         control_has_data = throttle is not None and steering is not None
+        lane_status_has_data = lane_status_updated_at is not None
         storage_has_data = (
             storage_used_percentage is not None
             and storage_used_bytes is not None
             and storage_total_bytes is not None
         )
         debug_image = {}
-        for key in self._debug_keys:
+        for key in ('sliding_window', 'lane_edge', 'yolo'):
             updated_at = debug_updated_at[key]
             debug_image[key] = {
                 'has_data': updated_at is not None,
@@ -221,6 +226,15 @@ class MonitorState:
                 'is_stale': self._is_stale(control_updated_monotonic),
                 'throttle': None if throttle is None else round(throttle, 2),
                 'steering': None if steering is None else round(steering, 2),
+            },
+            'lane_status': {
+                'has_data': lane_status_has_data,
+                'updated_at': None if lane_status_updated_at is None else lane_status_updated_at.isoformat(),
+                'is_stale': self._is_stale(lane_status_updated_monotonic),
+                'lane_detected': None if lane_detected is None else bool(lane_detected),
+                'confidence': None if lane_confidence is None else round(lane_confidence, 2),
+                'lateral_offset': None if lateral_offset is None else round(lateral_offset, 3),
+                'heading_error': None if heading_error is None else round(heading_error, 4),
             },
             'recording': {
                 'has_data': recording_updated_at is not None,
