@@ -15,6 +15,8 @@
 
 @par 로터리 한 바퀴 판정 (핵심)
 yaw 누적각이 아니라 **로터리 내부 정지선 검출 횟수**만 사용한다.
+정지선은 **노란(점선) 차선이 검출되는 동안(yellow_detected)에만** 센다 — 로터리 안
+노란 구간을 벗어나면 정지선 신호가 떠도 무시한다.
   - ROUNDABOUT_FOLLOW에서 1번째 정지선 → count=1 → ROUNDABOUT_CONTINUE_RIGHT
     (왼쪽 출구 무시, 오른쪽 원형 차선으로 계속 회전)
   - 2번째 정지선 → ROUNDABOUT_EXIT_LEFT (오른쪽 버리고 왼쪽 출구로 탈출)
@@ -245,9 +247,12 @@ class MissionSequencer:
 
         @details 1번째(count 0→1) → CONTINUE_RIGHT, 2번째(count→2) → EXIT_LEFT.
         같은 정지선 중복 카운트는 rising-edge + stopline_debounce_sec로 막는다.
+        @note 노란(점선) 차선이 검출되는 동안(yellow_detected)에만 카운트한다. 노랑이
+        사라지면 정지선 신호가 떠도 무시 — 로터리 안 노란 구간에서만 세기 위함.
         """
         rising = obs.lane.stop_line and not self._prev_stop_line
-        if not (rising and self._since_count >= self.cfg.stopline_debounce_sec):
+        if not (rising and obs.yellow_detected
+                and self._since_count >= self.cfg.stopline_debounce_sec):
             return
         self._stopline_count += 1
         self._since_count = 0.0

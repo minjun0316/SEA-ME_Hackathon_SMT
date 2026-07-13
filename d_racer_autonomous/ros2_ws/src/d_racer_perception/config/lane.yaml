@@ -32,13 +32,15 @@ lane_detect_node:
     # 노랑 HLS 임계(H,L,S). 07-12 하한 완화 (15,80,70)→(12,45,45): 노랑 점선이 BEV서
     # desaturate돼 S~67로 깔리는데 기존 S≥70서 탈락→노랑<흰→곡선서 노랑쪽 윈도우 붕괴.
     # 실측(image_raw) 노랑 1355→4505px(3.3배), 흰선 프레임 영향 미미. 노랑 더 놓치면 S/L↓.
-    yellow_lo: [12, 45, 45]
+    # 07-13 S만 45→58 재조임: 하한 45가 채도 낮은 노랑/노이즈까지 통과시켜서. 실측 노랑
+    # S~67에 ~9 마진 유지(70은 07-12에 바로 아래서 탈락한 값이라 그보다 낮게). 노이즈 남으면 60~63.
+    yellow_lo: [12, 45, 58]
     yellow_hi: [38, 255, 255]
-    yellow_pixel_threshold: 30
+    yellow_pixel_threshold: 25
     # 노랑 '우세'(노랑-only 마스크) 판정: 노랑 > yellow_pixel_threshold AND
     # 노랑 >= 흰색×이 비율. 흰선 warm-tint 조각이 흰 차선을 버리게 하던 오판 방지.
     # 1.0=노랑이 흰색보다 많아야 우세. 노란 차선 자꾸 놓치면 0.6으로, 흰선 밀리면 ↑.
-    yellow_over_white_ratio: 1.0
+    yellow_over_white_ratio: 0.6
 
     # --- 에지(Canny) 입력/임계 (흰선 끊김 개선, 07-10) ---
     # 정리한 lane_mask에 직접 Canny → 윤곽 연속·깨끗(gray/blur 대비 '인식했다 말았다' 완화).

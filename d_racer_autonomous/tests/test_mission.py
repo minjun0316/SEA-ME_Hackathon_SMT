@@ -143,6 +143,18 @@ def test_first_stopline_continues_right():
     assert cmd.follow_color == LaneColor.YELLOW
 
 
+def test_stopline_ignored_without_yellow():
+    """노랑 미검출이면 정지선을 봐도 카운트/분기하지 않는다."""
+    seq = MissionSequencer(_cfg())
+    _to_follow(seq)
+    cmd = seq.update(
+        _obs(lane=_lane(stop_line=True, stop_line_dist=0.3), yellow_detected=False),
+        dt=0.05)
+    assert seq.stopline_count == 0
+    assert seq.phase == MissionPhase.ROUNDABOUT_FOLLOW
+    del cmd
+
+
 def test_continue_right_returns_to_follow():
     seq = MissionSequencer(_cfg())
     _to_follow(seq)

@@ -283,6 +283,11 @@ class LaneDetector:
 
         # 중간 단계 노출(모니터 디버그 화면용). BEV=원근변환, edges=Canny 결과.
         if want_debug:
+            # Lane Edge 패널 좌상단에 현재 마스크 모드 라벨(디버그 전용, 비용 무시가능):
+            # 노랑 우세(노랑 마스크만)=only yl, 아니면 노랑∪흰=wh & yl.
+            edge_label = 'only yl' if yellow_dominant else 'wh & yl'
+            cv2.putText(edges, edge_label, (5, 16), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, 255, 1, cv2.LINE_AA)
             res.debug_stages = {'bev': bev, 'edges': edges}
 
         return res
