@@ -68,6 +68,12 @@ class PixelPIDNode(Node):
         self.declare_parameter('nwindows', 9)
         self.declare_parameter('margin', 20)
         self.declare_parameter('minpix', 5)
+        # HLS 임계(H,L,S). 하드코딩 제거(07-14) → d_racer_perception/config/lane.yaml의
+        # yellow_lo/hi·white_lo/hi(인지팀 실측값)와 동일하게 맞춤. 재측정 시 양쪽 갱신.
+        self.declare_parameter('yellow_lo', [0, 146, 129])
+        self.declare_parameter('yellow_hi', [153, 225, 255])
+        self.declare_parameter('white_lo', [0, 213, 0])
+        self.declare_parameter('white_hi', [172, 255, 255])
 
         # --- 안전 게이트 (controller_node와 동일 원칙) ---
         self.declare_parameter('enable_drive', False)
@@ -84,6 +90,10 @@ class PixelPIDNode(Node):
         self.nwindows = int(self.get_parameter('nwindows').value)
         self.margin = int(self.get_parameter('margin').value)
         self.minpix = int(self.get_parameter('minpix').value)
+        self.yellow_lo = tuple(int(v) for v in self.get_parameter('yellow_lo').value)
+        self.yellow_hi = tuple(int(v) for v in self.get_parameter('yellow_hi').value)
+        self.white_lo = tuple(int(v) for v in self.get_parameter('white_lo').value)
+        self.white_hi = tuple(int(v) for v in self.get_parameter('white_hi').value)
         self.enable_drive = bool(self.get_parameter('enable_drive').value)
         self.drive_throttle = float(self.get_parameter('drive_throttle').value)
         self.throttle_limit = abs(float(self.get_parameter('throttle_limit').value))
@@ -128,8 +138,8 @@ class PixelPIDNode(Node):
     def _lane_edges(self, bev):
         """@brief HLS 노랑/흰 마스크(노랑 우선) → Canny 엣지. 원본과 동일."""
         hls = cv2.cvtColor(bev, cv2.COLOR_BGR2HLS)
-        yellow = cv2.inRange(hls, (15, 80, 70), (35, 255, 255))
-        white = cv2.inRange(hls, (0, 200, 0), (180, 255, 70))
+        yellow = cv2.inRange(hls, np.array(self.yellow_lo), np.array(self.yellow_hi))
+        white = cv2.inRange(hls, np.array(self.white_lo), np.array(self.white_hi))
         if cv2.countNonZero(yellow) > self.yellow_thr:
             lane_mask = yellow                      # 노랑 충분 → 노랑만.
         else:

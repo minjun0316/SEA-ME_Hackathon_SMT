@@ -67,6 +67,11 @@
               <p class="debug-panel__topic">{{ sliding_window_topic }}</p>
             </article>
             <article class="debug-panel">
+              <p class="debug-panel__title">BEV</p>
+              <img id="debug-frame-bev" class="debug-panel__frame" src="{{ placeholder_url }}" alt="BEV preview">
+              <p class="debug-panel__topic">{{ bev_topic }}</p>
+            </article>
+            <article class="debug-panel">
               <p class="debug-panel__title">Lane Edge</p>
               <img id="debug-frame-lane_edge" class="debug-panel__frame" src="{{ placeholder_url }}" alt="Lane edge preview">
               <p class="debug-panel__topic">{{ lane_edge_topic }}</p>
@@ -292,6 +297,7 @@
         graphEndpoint: {{ url_for('api_graph')|tojson }},
         frameEndpoint: {{ url_for('api_frame')|tojson }},
         debugFrameSlidingWindowEndpoint: {{ url_for('api_frame_sliding_window')|tojson }},
+        debugFrameBevEndpoint: {{ url_for('api_frame_bev')|tojson }},
         debugFrameLaneEdgeEndpoint: {{ url_for('api_frame_lane_edge')|tojson }},
         debugFrameYoloEndpoint: {{ url_for('api_frame_yolo')|tojson }},
         debugImageEnabled: {{ debug_image|tojson }},

@@ -38,7 +38,7 @@ def create_app( state, page_title,
                 refresh_interval_ms, image_refresh_interval_ms,
                 header_logo_path, telechips_logo_path, topst_logo_path, 
                 image_display_width, image_display_height,
-                debug_image, sliding_window_topic, lane_edge_topic,
+                debug_image, sliding_window_topic, bev_topic, lane_edge_topic,
                 yolo_topic, lane_status_topic, graph_snapshot_provider=None ):
     
     app = Flask( __name__, template_folder=str(TEMPLATE_DIR), static_folder=str(STATIC_DIR),)
@@ -61,6 +61,7 @@ def create_app( state, page_title,
             topst_logo_url='/assets/topst-logo',
             debug_image=debug_image,
             sliding_window_topic=sliding_window_topic,
+            bev_topic=bev_topic,
             lane_edge_topic=lane_edge_topic,
             yolo_topic=yolo_topic,
             lane_status_topic=lane_status_topic,
@@ -104,6 +105,22 @@ def create_app( state, page_title,
             return Response(
                 build_camera_placeholder_svg(
                     image_display_width, image_display_height, sliding_window_topic
+                ),
+                mimetype='image/svg+xml',
+            )
+
+        response = Response(frame_bytes, mimetype='image/jpeg')
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        return response
+
+    @app.get('/api/frame/bev')
+    def api_frame_bev():
+        frame_bytes = state.get_debug_frame('bev')
+        if frame_bytes is None:
+            return Response(
+                build_camera_placeholder_svg(
+                    image_display_width, image_display_height, bev_topic
                 ),
                 mimetype='image/svg+xml',
             )

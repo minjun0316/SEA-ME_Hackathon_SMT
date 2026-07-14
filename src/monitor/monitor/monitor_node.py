@@ -60,6 +60,7 @@ class MonitorNode(Node):
         self.declare_parameter('image_topic', '/camera/image/compressed')
         self.declare_parameter('debug_image',True)
         self.declare_parameter('sliding_window_topic', '/perception/lane/debug/compressed')
+        self.declare_parameter('bev_topic', '/perception/lane/debug/bev/compressed')
         self.declare_parameter('lane_edge_topic', '/perception/lane/debug/edges/compressed')
         self.declare_parameter('yolo_topic', '/perception/test/yolo_detect/debug/compressed')
         self.declare_parameter('control_topic', '/control')
@@ -89,6 +90,7 @@ class MonitorNode(Node):
         self.control_topic = self.get_yaml_or_param_str(yaml_config, 'CONTROL_TOPIC', 'control_topic')
         self.debug_image = self.get_yaml_or_param_bool_multi(yaml_config, ('OPENCV_DEBUG_MODE', 'DEBUG_IMAGE'), 'debug_image')
         self.sliding_window_topic = self.get_yaml_or_param_str(yaml_config, 'SLIDING_WINDOW_TOPIC', 'sliding_window_topic')
+        self.bev_topic = self.get_yaml_or_param_str(yaml_config, 'BEV_TOPIC', 'bev_topic')
         self.lane_edge_topic = self.get_yaml_or_param_str(yaml_config, 'LANE_EDGE_TOPIC', 'lane_edge_topic')
         self.yolo_topic = self.get_yaml_or_param_str(yaml_config, 'YOLO_TOPIC', 'yolo_topic')
         self.lane_status_topic = self.get_yaml_or_param_str(yaml_config, 'LANE_STATUS_TOPIC', 'lane_status_topic')
@@ -157,6 +159,7 @@ class MonitorNode(Node):
             self.image_display_height,
             self.debug_image,
             self.sliding_window_topic,
+            self.bev_topic,
             self.lane_edge_topic,
             self.yolo_topic,
             self.lane_status_topic,
@@ -181,6 +184,12 @@ class MonitorNode(Node):
                 CompressedImage,
                 self.sliding_window_topic,
                 self.debug_sliding_window_callback,
+                10,
+            )
+            self.create_subscription(
+                CompressedImage,
+                self.bev_topic,
+                self.debug_bev_callback,
                 10,
             )
             self.create_subscription(
@@ -338,6 +347,9 @@ class MonitorNode(Node):
 
     def debug_sliding_window_callback(self, msg):
         self._debug_image_callback(msg, 'sliding_window', self.sliding_window_topic)
+
+    def debug_bev_callback(self, msg):
+        self._debug_image_callback(msg, 'bev', self.bev_topic)
 
     def debug_lane_edge_callback(self, msg):
         self._debug_image_callback(msg, 'lane_edge', self.lane_edge_topic)

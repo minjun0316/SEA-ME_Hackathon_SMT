@@ -28,6 +28,7 @@ const config = window.MONITOR_CONFIG || {
   graphEndpoint: '/api/graph',
   frameEndpoint: '/api/frame',
   debugFrameSlidingWindowEndpoint: '/api/frame/sliding_window',
+  debugFrameBevEndpoint: '/api/frame/bev',
   debugFrameLaneEdgeEndpoint: '/api/frame/lane_edge',
   debugFrameYoloEndpoint: '/api/frame/yolo',
   debugImageEnabled: false,
@@ -48,6 +49,7 @@ const elements = {
   imageResolution: document.getElementById('image-resolution'),
   cameraFrame: document.getElementById('camera-frame'),
   debugFrameSlidingWindow: document.getElementById('debug-frame-sliding_window'),
+  debugFrameBev: document.getElementById('debug-frame-bev'),
   debugFrameLaneEdge: document.getElementById('debug-frame-lane_edge'),
   debugFrameYolo: document.getElementById('debug-frame-yolo'),
   recordBadge: document.getElementById('record-badge'),
@@ -651,6 +653,7 @@ function refreshDebugFrames() {
 
   debugImageRequestInFlight = true;
   refreshImageByEndpoint(elements.debugFrameSlidingWindow, config.debugFrameSlidingWindowEndpoint);
+  refreshImageByEndpoint(elements.debugFrameBev, config.debugFrameBevEndpoint);
   refreshImageByEndpoint(elements.debugFrameLaneEdge, config.debugFrameLaneEdgeEndpoint);
   refreshImageByEndpoint(elements.debugFrameYolo, config.debugFrameYoloEndpoint);
   debugImageRequestInFlight = false;

@@ -41,20 +41,24 @@ def test_weak_peak_below_threshold_is_ignored():
 def test_strong_peak_is_adopted():
     """임계 이상 peak은 argmax로 채택(직전값과 블렌딩)."""
     det, w, h = _detector(), 320, 160
+    b = det.calib.seed_reacquire_blend
+    prev_l, prev_r = det._last_leftx, det._last_rightx
     hist = _hist(w, [(40, 5000.0), (250, 5000.0)])   # 충분한 에지량
     leftx, rightx = det._reacquire_base(hist, w, h)
-    # _last_*=0 과 0.5 블렌딩 → 실제 peak의 절반 위치.
-    assert leftx == int(0.0 * 0.5 + 40 * 0.5)
-    assert rightx == int(0.0 * 0.5 + 250 * 0.5)
+    # _last_* 과 seed_reacquire_blend 블렌딩 → config 값 추종(blend 튜닝돼도 안 깨짐).
+    assert leftx == int(prev_l * (1 - b) + 40 * b)
+    assert rightx == int(prev_r * (1 - b) + 250 * b)
 
 
 def test_one_side_missing_only_that_side_defaults():
     """오른쪽만 보이면 왼쪽만 기본위치, 오른쪽은 peak 채택."""
     det, w, h = _detector(), 320, 160
+    b = det.calib.seed_reacquire_blend
+    prev_r = det._last_rightx
     hist = _hist(w, [(250, 5000.0)])                 # 오른쪽만 강한 peak
     leftx, rightx = det._reacquire_base(hist, w, h)
     assert leftx == int(w * 0.25)                    # 왼쪽 미검출 → 기본 25%
-    assert rightx == int(0.0 * 0.5 + 250 * 0.5)      # 오른쪽 채택
+    assert rightx == int(prev_r * (1 - b) + 250 * b)  # 오른쪽 채택(config blend 추종)
 
 
 def test_collapse_guard_recovers_center_and_separates_seed():

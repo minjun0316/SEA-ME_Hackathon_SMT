@@ -29,16 +29,31 @@ lane_detect_node:
     bev_top_x: 0.2
 
     # --- 색/정지선 임계 ---
-    # 노랑 HLS 임계(H,L,S). 07-12 하한 완화 (15,80,70)→(12,45,45): 노랑 점선이 BEV서
-    # desaturate돼 S~67로 깔리는데 기존 S≥70서 탈락→노랑<흰→곡선서 노랑쪽 윈도우 붕괴.
-    # 실측(image_raw) 노랑 1355→4505px(3.3배), 흰선 프레임 영향 미미. 노랑 더 놓치면 S/L↓.
-    yellow_lo: [12, 45, 45]
-    yellow_hi: [38, 255, 255]
-    yellow_pixel_threshold: 15
-    # 노랑 '우세'(노랑-only 마스크) 판정: 노랑 > yellow_pixel_threshold AND
-    # 노랑 >= 흰색×이 비율. 흰선 warm-tint 조각이 흰 차선을 버리게 하던 오판 방지.
-    # 1.0=노랑이 흰색보다 많아야 우세. 노란 차선 자꾸 놓치면 0.6으로, 흰선 밀리면 ↑.
-    yellow_over_white_ratio: 0.01
+    # 노랑/흰 HLS 임계(H,L,S). 2026-07-14 인지팀 실측값(calibrate_hls)으로 교체.
+    # OpenCV BGR2HLS 규약: H 0~179, L/S 0~255. H 범위가 넓어 L·S가 주 판별축.
+    # 재측정 시 calibrate_hls 트랙바로 값 다시 잡아 여기(+core LaneCalib 기본값) 갱신.
+    yellow_lo: [0, 146, 129]
+    yellow_hi: [153, 225, 255]
+    # 흰색 고정 임계(white_adaptive=False 경로가 사용). 노드가 파라미터로 물려 여기서 튜닝.
+    white_lo: [0, 213, 0]
+    white_hi: [172, 255, 255]
+    yellow_pixel_threshold: 200
+    # 노랑 '우세'(노랑-only 마스크) 판정: 노랑 > yellow_pixel_threshold AND 노랑 >= 흰색×이 비율.
+    # 07-14: 0.01→0.5, 임계 15→250. on_yellow 래치가 지름길 노랑모드를 담당하게 되면서
+    # (use_yellow_only = on_yellow OR yellow_dominant), 이 매프레임 판정은 '강한 노랑만'
+    # 즉시반응하도록 조임 — 흰 구간서 소량 노랑(얼룩/반사)에 노랑모드로 새던 오작동 방지.
+    # 노랑모드 진입이 늦으면 임계↓/ratio↓, 흰 구간서 노랑으로 새면 ↑.
+    yellow_over_white_ratio: 0.25
+
+    # --- 노랑 지름길 래치(on_yellow) — 미션 SHORTCUT 진입 신호(hysteresis) ---
+    # '노랑 우세'(노랑 픽셀 ≥ min_px AND 노랑 ≥ 흰색×dom_ratio) 프레임이 enter_frames
+    # 연속이면 ON, 비우세가 exit_frames 연속이면 OFF. exit>enter 비대칭이 점선 갭을 견딤.
+    # 마스크 선택(yellow_over_white_ratio)과 독립. 트랙 튜닝: SHORTCUT 진입이 늦으면
+    # enter_frames↓/min_px↓, 흰선 구간에서 오래치되면 dom_ratio↑/min_px↑.
+    on_yellow_min_px: 300         # 노랑 절대 픽셀 하한(stray 배제)
+    on_yellow_dom_ratio: 1.2      # 노랑 ≥ 흰색×이 배 여야 우세
+    on_yellow_enter_frames: 5     # 연속 우세 프레임 → ON(~0.25s@20fps)
+    on_yellow_exit_frames: 15     # 연속 비우세 프레임 → OFF(~0.75s, 점선 갭 견딤)
 
     # --- 에지(Canny) 입력/임계 (흰선 끊김 개선, 07-10) ---
     # 정리한 lane_mask에 직접 Canny → 윤곽 연속·깨끗(gray/blur 대비 '인식했다 말았다' 완화).
@@ -52,25 +67,27 @@ lane_detect_node:
     stopline_roi_h: 110           # 하단 ROI 높이[px]. 정지선 탐색 구간. 07-12 90→110: 실차서 회전 시작이 늦어 검출을 ~11cm 앞당김(1px≈5.7mm 전방). 더 일찍 꺾으려면 ↑, 너무 일찍이면 ↓.
     stopline_row_coverage: 0.45   # 한 행이 폭의 이 비율 이상 흰색이면 정지선 후보 행(하한). 오검출이면 ↑, 안잡히면 ↓.
     stopline_max_width_m: 0.40    # 가로폭 상한[m]: 한 행 연속 정지선색 폭이 이 값 초과면 '가로로 너무 긺'→후보 제외. 실측 정지선폭=0.35(≈140px). 0.35+여유(왜곡/양자화)로 0.40 권장. 벽·프레임 가로지르는 얼룩은 훨씬 길어 확실히 잘림. 진짜 정지선이 잘리면 ↑, 오검출 남으면 0.35로 ↓, 0=상한없음.
-    # 세로 두께 창[m]: 후보 행의 '연속' 두께가 이 범위에 드는 런만 정지선(m_per_px_forward로 px 환산). 가로폭 상한과 대칭.
-    stopline_min_thickness_m: 0.02  # 세로 두께 하한[m](≈4px). 실측 정지선 두께=0.03m. 얇은 선/원거리서 안잡히면 ↓, 노이즈 오검출이면 ↑.
-    stopline_max_thickness_m: 0.06  # 세로 두께 상한[m](≈11px). '너무 두꺼운' 덩어리(벽/큰 얼룩/바닥반사)를 정지선으로 오인하는 것 차단. 오검출이면 ↓, 진짜 정지선이 잘리면 ↑. 0=상한없음.
+    # 행수 방식(07-14): 커버리지 임계(stopline_row_coverage) 넘은 후보 행 수가 min_rows 이상이면 정지선 검출.
+    stopline_min_rows: 6            # 후보 행이 이만큼 이상이면 정지선 검출. 안잡히면 ↓, 오검출이면 ↑.
     stopline_len_threshold: 100.0  # (구) Hough 임계 — 커버리지 방식으로 대체돼 미사용(노드 호환용 잔존).
 
     # --- 커브: 한쪽 차선 소실 시 복원용 차선폭[BEV px] ---
     # 두 선 다 보이는 프레임에서 자동 학습. 아래는 학습 전 초기값(트랙서 조정 가능).
     lane_width_px: 140.0  # 4점: 35cm ÷ 0.002506 ≈ 140px. 두 선 보이면 자동 재학습.
+    # 차선폭 자동학습 스위치: true=두 선 보일 때 EMA 재학습(위 값은 초기값), false=끄고
+    # lane_width_px 고정값만 사용(학습 표류로 복원폭이 흔들릴 때 잠금). 한쪽 소실 복원·붕괴판정 공통.
+    lane_width_learn: false
 
     # --- lost 재획득 시 base fallback (07-10) ---
     # 히스토그램 peak 열의 에지량이 (스캔행수×255×seed_min_fill) 미만이면 그쪽 차선을
     # '미검출'로 보고 base를 화면 25%/75%에 고정(argmax가 0/노이즈를 base로 잡는 것 방지).
     # ↑ 노이즈를 차선으로 오인하면(엉뚱한 점 지속) 올리고, 흐린 차선을 자꾸 놓치면 내려.
     seed_min_fill: 0.05
-    seed_reacquire_blend: 0.5  # lost 재획득: base = prev*(1-b) + hist_peak*b. 0.5=반반.
+    seed_reacquire_blend: 0.8 # lost 재획득: base = prev*(1-b) + hist_peak*b. 0.5=반반.
 
     # --- lock 중 히스토그램 블렌딩 (07-10, 기본 off) ---
     # lock(추종 중)에도 매 프레임 hist peak를 seed에 섞어 커브 지연↓. 0.0=off(순수 prev).
     # seed = prev*(1-b) + peak*b. 단, prev ±seed_hist_band_px 밴드 안 peak만·에지량
     # 충분할 때만 섞음(반대차선 점프·garbage 배제). 켤 땐 0.1~0.3, seed 떨리면 낮춰.
-    seed_lock_hist_blend: 0.0
-    seed_hist_band_px: 60.0    # 위 밴드 폭(±px). 좁을수록 안전(점프 억제), 넓을수록 반응↑.
+    seed_lock_hist_blend: 0.95
+    seed_hist_band_px: 90.0    # 위 밴드 폭(±px). 좁을수록 안전(점프 억제), 넓을수록 반응↑.

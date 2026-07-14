@@ -19,26 +19,31 @@ class MonitorState:
         self._image_updated_monotonic = None
         self._debug_frames = {
             'sliding_window': None,
+            'bev': None,
             'lane_edge': None,
             'yolo': None,
         }
         self._debug_widths = {
             'sliding_window': image_source_width,
+            'bev': image_source_width,
             'lane_edge': image_source_width,
             'yolo': image_source_width,
         }
         self._debug_heights = {
             'sliding_window': image_source_height,
+            'bev': image_source_height,
             'lane_edge': image_source_height,
             'yolo': image_source_height,
         }
         self._debug_updated_at = {
             'sliding_window': None,
+            'bev': None,
             'lane_edge': None,
             'yolo': None,
         }
         self._debug_updated_monotonic = {
             'sliding_window': None,
+            'bev': None,
             'lane_edge': None,
             'yolo': None,
         }
@@ -197,7 +202,7 @@ class MonitorState:
             and storage_total_bytes is not None
         )
         debug_image = {}
-        for key in ('sliding_window', 'lane_edge', 'yolo'):
+        for key in ('sliding_window', 'bev', 'lane_edge', 'yolo'):
             updated_at = debug_updated_at[key]
             debug_image[key] = {
                 'has_data': updated_at is not None,

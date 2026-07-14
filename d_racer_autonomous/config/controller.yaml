@@ -61,13 +61,13 @@ lateral_pd:
 
 # --- 정지선 카운트 → 개루프 고정스티어 기동 (로터리 진입/탈출) ---
 # on/off는 운영 플래그라 controller_node ROS 파라미터(런치 인자) stopline_maneuver:=True 로 켠다.
-# 1번째 정지선→좌 고정스티어 duration_sec, 2번째→우 고정스티어(탈출). 개루프라 회전 중
+# 1번째 정지선→우 고정스티어 duration_sec, 2번째→좌 고정스티어(탈출). 개루프라 회전 중
 # 차선 놓쳐도 시간만큼 그대로 돈다(아루코 정지 게이트는 안전상 유지). @see core/planning/stopline_maneuver.py
 stopline_maneuver:
   steer: 0.35        # 고정 조향 크기(정규화, 트림 전 raw). "조금". ⚠️실차 첫 튜닝 1순위 — 커브 못 돌면 ↑, 과회전이면 ↓.
   duration_sec: 1.5  # 기동 유지 시간[s]. 회전 덜 되면 ↑, 지나치면 ↓.
-  first_dir: 1.0     # 1번째 정지선 방향(+1=좌회전).
-  second_dir: -1.0   # 2번째 정지선 방향(-1=우회전, 탈출).
+  first_dir: -1.0    # 1번째 정지선 방향(-1=우회전).
+  second_dir: 1.0    # 2번째 정지선 방향(+1=좌회전, 탈출).
   debounce_sec: 1.5  # 정지선 카운트 최소 간격[s](한 정지선 중복 카운트 방지).
   max_count: 2       # 이 카운트까지만 기동(이후 정지선 무시).
 

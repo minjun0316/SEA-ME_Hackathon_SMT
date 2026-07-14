@@ -83,9 +83,18 @@ class LaneDetectNode(Node):
         self.declare_parameter('bev_top_x', d.bev_top_x)
         self.declare_parameter('yellow_pixel_threshold', d.yellow_pixel_threshold)
         self.declare_parameter('yellow_over_white_ratio', d.yellow_over_white_ratio)
+        # 노랑 지름길 래치(on_yellow, hysteresis) — 미션 SHORTCUT 진입 신호. @see LaneCalib.
+        self.declare_parameter('on_yellow_min_px', d.on_yellow_min_px)
+        self.declare_parameter('on_yellow_dom_ratio', d.on_yellow_dom_ratio)
+        self.declare_parameter('on_yellow_enter_frames', d.on_yellow_enter_frames)
+        self.declare_parameter('on_yellow_exit_frames', d.on_yellow_exit_frames)
         # 노랑 HLS 임계(H,L,S) 하한/상한. 점선 노랑이 잘 안 잡히면 S/L 하한을 낮춰 튜닝.
         self.declare_parameter('yellow_lo', [int(v) for v in d.yellow_lo])
         self.declare_parameter('yellow_hi', [int(v) for v in d.yellow_hi])
+        # 흰 HLS 임계(H,L,S). white_adaptive=False 기본 경로가 이 값을 씀. 이전엔 노드가
+        # 미노출이라 core 기본값에 고정돼 있었음 → 파라미터로 물려 lane.yaml에서 튜닝 가능.
+        self.declare_parameter('white_lo', [int(v) for v in d.white_lo])
+        self.declare_parameter('white_hi', [int(v) for v in d.white_hi])
         self.declare_parameter('edge_from_mask', d.edge_from_mask)
         self.declare_parameter('edge_close_ksize', d.edge_close_ksize)
         self.declare_parameter('edge_dilate_iter', d.edge_dilate_iter)
@@ -97,9 +106,9 @@ class LaneDetectNode(Node):
         self.declare_parameter('stopline_roi_h', d.stopline_roi_h)
         self.declare_parameter('stopline_row_coverage', d.stopline_row_coverage)
         self.declare_parameter('stopline_max_width_m', d.stopline_max_width_m)
-        self.declare_parameter('stopline_min_thickness_m', d.stopline_min_thickness_m)
-        self.declare_parameter('stopline_max_thickness_m', d.stopline_max_thickness_m)
+        self.declare_parameter('stopline_min_rows', d.stopline_min_rows)
         self.declare_parameter('lane_width_px', d.lane_width_px)
+        self.declare_parameter('lane_width_learn', d.lane_width_learn)
         self.declare_parameter('seed_reacquire_blend', d.seed_reacquire_blend)
         self.declare_parameter('seed_lock_hist_blend', d.seed_lock_hist_blend)
         self.declare_parameter('seed_hist_band_px', d.seed_hist_band_px)
@@ -126,8 +135,14 @@ class LaneDetectNode(Node):
             bev_matrix=_bev,
             yellow_pixel_threshold=int(self.get_parameter('yellow_pixel_threshold').value),
             yellow_over_white_ratio=float(self.get_parameter('yellow_over_white_ratio').value),
+            on_yellow_min_px=int(self.get_parameter('on_yellow_min_px').value),
+            on_yellow_dom_ratio=float(self.get_parameter('on_yellow_dom_ratio').value),
+            on_yellow_enter_frames=int(self.get_parameter('on_yellow_enter_frames').value),
+            on_yellow_exit_frames=int(self.get_parameter('on_yellow_exit_frames').value),
             yellow_lo=tuple(int(v) for v in self.get_parameter('yellow_lo').value),
             yellow_hi=tuple(int(v) for v in self.get_parameter('yellow_hi').value),
+            white_lo=tuple(int(v) for v in self.get_parameter('white_lo').value),
+            white_hi=tuple(int(v) for v in self.get_parameter('white_hi').value),
             edge_from_mask=bool(self.get_parameter('edge_from_mask').value),
             edge_close_ksize=int(self.get_parameter('edge_close_ksize').value),
             edge_dilate_iter=int(self.get_parameter('edge_dilate_iter').value),
@@ -138,9 +153,9 @@ class LaneDetectNode(Node):
             stopline_roi_h=int(self.get_parameter('stopline_roi_h').value),
             stopline_row_coverage=float(self.get_parameter('stopline_row_coverage').value),
             stopline_max_width_m=float(self.get_parameter('stopline_max_width_m').value),
-            stopline_min_thickness_m=float(self.get_parameter('stopline_min_thickness_m').value),
-            stopline_max_thickness_m=float(self.get_parameter('stopline_max_thickness_m').value),
+            stopline_min_rows=int(self.get_parameter('stopline_min_rows').value),
             lane_width_px=float(self.get_parameter('lane_width_px').value),
+            lane_width_learn=bool(self.get_parameter('lane_width_learn').value),
             seed_reacquire_blend=float(self.get_parameter('seed_reacquire_blend').value),
             seed_lock_hist_blend=float(self.get_parameter('seed_lock_hist_blend').value),
             seed_hist_band_px=float(self.get_parameter('seed_hist_band_px').value),
@@ -204,6 +219,7 @@ class LaneDetectNode(Node):
         s.heading_error = float(res.heading_error)
         s.stop_line = bool(res.stop_line)
         s.stop_line_dist = float(res.stop_line_dist)
+        s.on_yellow = bool(res.on_yellow)  # 노랑 지름길 래치(hysteresis) → 미션 SHORTCUT 신호.
         # 정지선 인식 순간(False→True) 즉시 로그 — 인식 여부를 눈으로 확인.
         if s.stop_line and not getattr(self, '_prev_stopline', False):
             self.get_logger().info(f'>>> STOPLINE 인식! dist={s.stop_line_dist:.2f}m')
@@ -213,9 +229,8 @@ class LaneDetectNode(Node):
             self.get_logger().warn(
                 f'stopline 근접(미검출): cov={res.stopline_cov_max:.2f}/'
                 f'{self.get_parameter("stopline_row_coverage").value:.2f} '
-                f'thick={res.stopline_n_band}px '
-                f'win={self.get_parameter("stopline_min_thickness_m").value:.2f}~'
-                f'{self.get_parameter("stopline_max_thickness_m").value:.2f}m')
+                f'rows={res.stopline_n_band} '
+                f'min_rows={self.get_parameter("stopline_min_rows").value}')
         self._prev_stopline = bool(s.stop_line)
         # 주의: LaneStatus msg엔 yellow/white_detected 필드가 없다(슬림화됨). 여기서
         # s.yellow_detected 등을 set하면 AttributeError로 노드가 죽는다 → set 금지.
