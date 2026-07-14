@@ -43,7 +43,7 @@ lane_detect_node:
     # (use_yellow_only = on_yellow OR yellow_dominant), 이 매프레임 판정은 '강한 노랑만'
     # 즉시반응하도록 조임 — 흰 구간서 소량 노랑(얼룩/반사)에 노랑모드로 새던 오작동 방지.
     # 노랑모드 진입이 늦으면 임계↓/ratio↓, 흰 구간서 노랑으로 새면 ↑.
-    yellow_over_white_ratio: 0.25
+    yellow_over_white_ratio: 0.2
 
     # --- 노랑 지름길 래치(on_yellow) — 미션 SHORTCUT 진입 신호(hysteresis) ---
     # '노랑 우세'(노랑 픽셀 ≥ min_px AND 노랑 ≥ 흰색×dom_ratio) 프레임이 enter_frames
@@ -77,6 +77,17 @@ lane_detect_node:
     # 차선폭 자동학습 스위치: true=두 선 보일 때 EMA 재학습(위 값은 초기값), false=끄고
     # lane_width_px 고정값만 사용(학습 표류로 복원폭이 흔들릴 때 잠금). 한쪽 소실 복원·붕괴판정 공통.
     lane_width_learn: false
+
+    # --- 단일-기준선 추종 / 양선 전환 히스테리시스(07-14) ---
+    # 우회전 구간처럼 한쪽(왼)만 안정 검출되면 그 선 하나만 추종(중심=선±폭/2, 법선).
+    # 반대선(오른쪽)이 min_sep(=lane_collapse_frac×폭) 밖에서 both_enter_frames 연속
+    # 검출돼야 양선중심으로 승격 → 반대 없는 쪽으로 튀기(문제1)·합쳐진 창 편향(문제2) 제거.
+    lane_collapse_frac: 0.5   # 양선 인정 최소 수평간격 = 이 값×lane_width_px(140px→70px).
+    both_enter_frames: 3      # 양선 안정검출 이만큼 연속 → 양선중심 승격(~0.15s@20fps). 승격 늦으면 ↓.
+    both_exit_frames: 5       # 한쪽 소실/붕괴 이만큼 연속 → 단일선 강등. 점선 갭에 흔들리면 ↑.
+    perp_offset: true         # 한쪽만 볼 때 폭/2 오프셋을 법선(수직)으로. 곡선서 수평오프셋 부족→치우침(우회전 이탈) 방지. false=옛 수평.
+    perp_max_slope: 1.5       # 법선 배율 √(1+slope²)의 slope(dx/dy) 절댓값 상한(병적 피팅 오프셋 폭주 방지). 중심이 반대차선 넘으면 ↓.
+    yellow_side: right        # 노랑=오른쪽 갈림길 분기선 → 노랑 단일추종 중심=노랑-폭/2(노랑 왼쪽=원 차로 쪽). left면 반대.
 
     # --- lost 재획득 시 base fallback (07-10) ---
     # 히스토그램 peak 열의 에지량이 (스캔행수×255×seed_min_fill) 미만이면 그쪽 차선을
