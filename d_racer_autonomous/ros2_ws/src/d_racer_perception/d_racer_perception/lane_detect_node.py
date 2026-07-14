@@ -107,8 +107,20 @@ class LaneDetectNode(Node):
         self.declare_parameter('stopline_row_coverage', d.stopline_row_coverage)
         self.declare_parameter('stopline_max_width_m', d.stopline_max_width_m)
         self.declare_parameter('stopline_min_rows', d.stopline_min_rows)
+        # 정지선 검출 방식(coverage|hough) + hough 파라미터(작년 검증 방식 재이식).
+        self.declare_parameter('stopline_method', d.stopline_method)
+        self.declare_parameter('stopline_canny_lo', d.stopline_canny_lo)
+        self.declare_parameter('stopline_canny_hi', d.stopline_canny_hi)
+        self.declare_parameter('stopline_hough_thresh', d.stopline_hough_thresh)
+        self.declare_parameter('stopline_hough_min_len', d.stopline_hough_min_len)
+        self.declare_parameter('stopline_hough_max_gap', d.stopline_hough_max_gap)
+        self.declare_parameter('stopline_angle_tol_deg', d.stopline_angle_tol_deg)
         self.declare_parameter('lane_width_px', d.lane_width_px)
         self.declare_parameter('lane_width_learn', d.lane_width_learn)
+        # 단일 기준선 고정 추종(single_anchor) — 오른선 하나만. dual 우회(붕괴/정체성 차단).
+        self.declare_parameter('single_anchor', d.single_anchor)
+        self.declare_parameter('anchor_side', d.anchor_side)
+        self.declare_parameter('anchor_hold_frames', d.anchor_hold_frames)
         self.declare_parameter('seed_reacquire_blend', d.seed_reacquire_blend)
         self.declare_parameter('seed_lock_hist_blend', d.seed_lock_hist_blend)
         self.declare_parameter('seed_hist_band_px', d.seed_hist_band_px)
@@ -154,8 +166,18 @@ class LaneDetectNode(Node):
             stopline_row_coverage=float(self.get_parameter('stopline_row_coverage').value),
             stopline_max_width_m=float(self.get_parameter('stopline_max_width_m').value),
             stopline_min_rows=int(self.get_parameter('stopline_min_rows').value),
+            stopline_method=str(self.get_parameter('stopline_method').value),
+            stopline_canny_lo=int(self.get_parameter('stopline_canny_lo').value),
+            stopline_canny_hi=int(self.get_parameter('stopline_canny_hi').value),
+            stopline_hough_thresh=int(self.get_parameter('stopline_hough_thresh').value),
+            stopline_hough_min_len=int(self.get_parameter('stopline_hough_min_len').value),
+            stopline_hough_max_gap=int(self.get_parameter('stopline_hough_max_gap').value),
+            stopline_angle_tol_deg=float(self.get_parameter('stopline_angle_tol_deg').value),
             lane_width_px=float(self.get_parameter('lane_width_px').value),
             lane_width_learn=bool(self.get_parameter('lane_width_learn').value),
+            single_anchor=bool(self.get_parameter('single_anchor').value),
+            anchor_side=str(self.get_parameter('anchor_side').value),
+            anchor_hold_frames=int(self.get_parameter('anchor_hold_frames').value),
             seed_reacquire_blend=float(self.get_parameter('seed_reacquire_blend').value),
             seed_lock_hist_blend=float(self.get_parameter('seed_lock_hist_blend').value),
             seed_hist_band_px=float(self.get_parameter('seed_hist_band_px').value),

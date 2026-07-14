@@ -72,7 +72,7 @@ class MonitorNode(Node):
         self.declare_parameter('web_port', 5000)
         self.declare_parameter('page_title', 'D-Racer Monitor')
         self.declare_parameter('refresh_interval_ms', 1000)
-        self.declare_parameter('image_refresh_interval_ms', 100)
+        self.declare_parameter('image_refresh_interval_ms', 300)
         self.declare_parameter('stale_timeout_sec', 3.0)
         self.declare_parameter('image_source_width', 160)
         self.declare_parameter('image_source_height', 120)

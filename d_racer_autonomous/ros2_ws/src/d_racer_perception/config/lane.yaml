@@ -64,19 +64,37 @@ lane_detect_node:
     canny_hi: 90            # 옛 150→90. lo의 ~3배 유지
     # 정지선(행별 흰색 커버리지 밴드 — Hough 대체, 조명/점선 강건). 적응형 흰 마스크 재사용.
     stopline_color: yellow        # 정지선 색: yellow|white|both. 실트랙 정지선=노랑(07-12: 흰색으로 찾다 못 잡던 버그 수정). 차선도 노랑이나 세로라 행커버리지 낮아 구분됨.
-    stopline_roi_h: 110           # 하단 ROI 높이[px]. 정지선 탐색 구간. 07-12 90→110: 실차서 회전 시작이 늦어 검출을 ~11cm 앞당김(1px≈5.7mm 전방). 더 일찍 꺾으려면 ↑, 너무 일찍이면 ↓.
+    stopline_roi_h: 0             # 0=ROI 없이 BEV '전체'에서 정지선 탐색(07-14). >0 이면 하단 그 px만(옛 110=하단만). 되돌리려면 110. 전체탐색은 원거리/커브 오검↑ — 폭상한(max_width_m)·min_rows·decision heading 게이트가 방어선.
     stopline_row_coverage: 0.45   # 한 행이 폭의 이 비율 이상 흰색이면 정지선 후보 행(하한). 오검출이면 ↑, 안잡히면 ↓.
     stopline_max_width_m: 0.40    # 가로폭 상한[m]: 한 행 연속 정지선색 폭이 이 값 초과면 '가로로 너무 긺'→후보 제외. 실측 정지선폭=0.35(≈140px). 0.35+여유(왜곡/양자화)로 0.40 권장. 벽·프레임 가로지르는 얼룩은 훨씬 길어 확실히 잘림. 진짜 정지선이 잘리면 ↑, 오검출 남으면 0.35로 ↓, 0=상한없음.
     # 행수 방식(07-14): 커버리지 임계(stopline_row_coverage) 넘은 후보 행 수가 min_rows 이상이면 정지선 검출.
     stopline_min_rows: 6            # 후보 행이 이만큼 이상이면 정지선 검출. 안잡히면 ↓, 오검출이면 ↑.
-    stopline_len_threshold: 100.0  # (구) Hough 임계 — 커버리지 방식으로 대체돼 미사용(노드 호환용 잔존).
+    # --- 정지선 검출 방식(07-14: 작년 검증 Hough 재이식) ---
+    # coverage=행 커버리지(위 stopline_row_coverage/min_rows/max_width_m 사용).
+    # hough=작년에 실제로 잘 잡던 방식: 정지선색 마스크→Canny→HoughLinesP→'수평' 선분
+    # 길이합 > stopline_len_threshold면 검출(세로 차선은 각도로 배제). 색은 stopline_color 그대로.
+    stopline_method: hough         # coverage|hough. coverage가 못 잡아 hough로 전환.
+    stopline_len_threshold: 150.0  # hough: 수평 선분 길이합 임계(작년값 150). 안잡히면 ↓, 오검출이면 ↑.
+    stopline_canny_lo: 100         # hough: 마스크 Canny 하한.
+    stopline_canny_hi: 200         # hough: 마스크 Canny 상한.
+    stopline_hough_thresh: 40      # hough: HoughLinesP 누적 임계.
+    stopline_hough_min_len: 40     # hough: 최소 선분 길이[px].
+    stopline_hough_max_gap: 5      # hough: 선분 내 최대 갭[px].
+    stopline_angle_tol_deg: 10.0   # hough: 수평 판정 허용각[deg]. 세로 차선 배제.
 
     # --- 커브: 한쪽 차선 소실 시 복원용 차선폭[BEV px] ---
     # 두 선 다 보이는 프레임에서 자동 학습. 아래는 학습 전 초기값(트랙서 조정 가능).
-    lane_width_px: 140.0  # 4점: 35cm ÷ 0.002506 ≈ 140px. 두 선 보이면 자동 재학습.
+    lane_width_px: 146.0  # single_anchor 바이어스 = 이 값/2(왼선 anchor: 중심=왼선+W/2). 07-14: 차 정중앙서 offset=0 되도록 실측 튜닝(W=146→offset≈0). 왼선기준: 너무 왼쪽→↑, 너무 오른쪽→↓.
     # 차선폭 자동학습 스위치: true=두 선 보일 때 EMA 재학습(위 값은 초기값), false=끄고
     # lane_width_px 고정값만 사용(학습 표류로 복원폭이 흔들릴 때 잠금). 한쪽 소실 복원·붕괴판정 공통.
     lane_width_learn: false
+
+    # --- 단일 기준선 고정 추종(single_anchor) — 오른선 하나만 추적(붕괴/좌우헷갈림 원천 차단) ---
+    # 중심선 = 오른선 − lane_width_px/2. 오른선 소실(점선 갭) 시 anchor_hold_frames 동안
+    # 직전 피팅 유지(coast). 지름길 오른선=실선(중간 점선)이라 hold 넉넉히. dual 되돌리려면 false.
+    single_anchor: true
+    anchor_side: left           # 이 트랙: 오른선이 화면 밖으로 나가 왼선 기준. 중심선 = 왼선 + lane_width_px/2
+    anchor_hold_frames: 12      # 점선 갭 견딤(넉넉히). 소실서 반대선 튀면 ↓, 갭서 끊기면 ↑
 
     # --- 단일-기준선 추종 / 양선 전환 히스테리시스(07-14) ---
     # 우회전 구간처럼 한쪽(왼)만 안정 검출되면 그 선 하나만 추종(중심=선±폭/2, 법선).

@@ -100,7 +100,7 @@ class LaneCalib:
     # 이상일 때만 섞는다(garbage 프레임은 유지). 커브에서 lock seed가 뒤처지는 지연을
     # 줄이는 용도. 켜면 지연↓·추종성↑, 과하면 노이즈로 seed가 떨릴 수 있어 0.1~0.3 권장.
     seed_lock_hist_blend: float = 0.3
-    seed_hist_band_px: float = 60.0     ##< lock 블렌딩 시 prev 주변 peak 탐색 밴드(±px)
+    seed_hist_band_px: float = 70.0     ##< lock 블렌딩 시 prev 주변 peak 탐색 밴드(±px)
     # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
     # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
     lane_width_px: float = 180.0
@@ -112,6 +112,15 @@ class LaneCalib:
     # 모두 달라붙는다. 두 피팅선 간격이 이 비율×lane_w보다 좁으면 '같은 선을 중복
     # 검출'로 보고 단일 차선으로 강등한다(→ 곡선방향 기반 안쪽 복원).
     lane_collapse_frac: float = 0.5
+
+    # --- 단일 기준선 고정 추종(single_anchor) — 오른쪽 한 선만 추적 ---
+    # dual 두 창의 붕괴·좌우 정체성 문제를 원천 차단하는 대안 모드. 기준선(anchor_side)
+    # 하나만 추적하고 중심선 = 기준선 ∓ lane_w/2. 소실 시 anchor_hold_frames 동안 직전
+    # 피팅 유지(coast)해 점선 갭에서 반대선으로 안 튐. 바이어스가 W/2라 lane_width_px 실측 +
+    # lane_width_learn=false 권장. 기본 off(dual 유지), lane.yaml single_anchor=true로 A/B.
+    single_anchor: bool = False        ##< True=단일 기준선 고정 추종(dual 우회).
+    anchor_side: str = 'right'         ##< 고정 기준 경계선: 'right'(기본) | 'left'.
+    anchor_hold_frames: int = 10       ##< 기준선 소실 시 직전 피팅 유지 최대 프레임(점선 갭).
     # --- 노랑 우선 단일선 추종(07-12) --------------------------------- #
     # 곡선서 노랑이 잠깐 사라지면 흰선으로 기준이 넘어가 이탈하던 문제 해결:
     # 노란선 '하나'를 색 분리 edge에서 단일 슬라이딩윈도우로 추적하고, 중심선은
@@ -148,7 +157,18 @@ class LaneCalib:
     stopline_row_coverage: float = 0.45  ##< 한 행이 이 비율 이상 정지선색이면 후보 행(하한).
     stopline_max_width_m: float = 40.0    ##< 가로폭 상한[m]: 한 행의 '연속' 정지선색 폭이 이 값 초과면 가로로 너무 긺→후보 제외(m_per_px_lateral로 px 환산). 0=상한없음. 실측 정지선폭=0.35.
     stopline_min_rows: int = 6           ##< 후보 행이 이만큼 이상이면 정지선 검출.
-    stopline_len_threshold: float = 150.0  ##< (구) Hough 합산길이 임계 — 커버리지 방식으로 대체, 미사용(노드 호환용 잔존).
+    stopline_len_threshold: float = 150.0  ##< hough 방식: 수평 선분 길이합 임계(넘으면 정지선). 작년 검증값 150.
+    # --- 정지선 검출 방식 스위치(07-14, 작년 Hough 재이식) ---
+    # "coverage"=행별 색 커버리지(조명/점선 강건, 07-14 도입). "hough"=작년에 실제로
+    # 잘 잡던 방식(정지선색 마스크→Canny→HoughLinesP→'수평' 선분 길이합 > len_threshold).
+    # 실트랙서 coverage가 정지선을 못 잡으면 hough로 전환(색은 stopline_color 그대로).
+    stopline_method: str = "coverage"     ##< "coverage"|"hough".
+    stopline_canny_lo: int = 100          ##< hough: 마스크 Canny 하한.
+    stopline_canny_hi: int = 200          ##< hough: 마스크 Canny 상한.
+    stopline_hough_thresh: int = 40       ##< hough: HoughLinesP 누적 임계.
+    stopline_hough_min_len: int = 40      ##< hough: 최소 선분 길이[px].
+    stopline_hough_max_gap: int = 5       ##< hough: 선분 내 최대 갭[px].
+    stopline_angle_tol_deg: float = 10.0  ##< hough: 수평 판정 허용각[deg](|angle|<tol 또는 >180-tol). 세로 차선 배제.
 
     # --- 픽셀→미터(BEV 기준). 캘리브 전 잠정값 → 트랙 튜닝 ---
     m_per_px_forward: float = 0.005    ##< BEV 세로 1px 당 전방 거리[m]
@@ -196,6 +216,9 @@ class LaneDetector:
         self._last_rightx = 0.0
         self._last_conf = 0.0        ##< 직전 프레임 confidence. seed lock/lost 판정용.
         self._lane_width_px = None   ##< 두 선 다 보일 때 학습한 차선폭[px]. None이면 config 기본값.
+        # 단일 기준선 추종(single_anchor) 상태
+        self._anchor_fit = None      ##< 직전 기준선 창별 x 배열(소실 hold coast용).
+        self._anchor_age = 999       ##< 기준선 마지막 검출 이후 프레임(0=이번 프레임 검출).
         # --- 노랑 우선 단일선 추종 상태(follow_yellow) ---
         self._last_yellow_x = None   ##< 직전 노랑 near-x(단일선 seed)
         self._last_white_x = None    ##< 직전 흰 near-x(폴백 seed)
@@ -539,9 +562,12 @@ class LaneDetector:
             if debug is not None:
                 # 엣지를 실제로 잡은 창만 그린다. lf/rf 무관하게 그리면 엣지가 없어도
                 # seed 위치(lock=직전 seed, lost=0.25/0.75w 기본)에 유령 윈도우가 뜬다.
-                if lf:
+                # single_anchor면 '실제 쓰는' 기준선 창만 표시(대시보드 명확화).
+                draw_left = (not c.single_anchor) or (c.anchor_side == 'left')
+                draw_right = (not c.single_anchor) or (c.anchor_side != 'left')
+                if lf and draw_left:
                     cv2.rectangle(debug, (lx_low, y_low), (lx_high, y_high), (255, 0, 0), 2)
-                if rf:
+                if rf and draw_right:
                     cv2.rectangle(debug, (rx_low, y_low), (rx_high, y_high), (0, 0, 255), 2)
 
         # --- 2단계: 유효 선 판정 + 곡선 피팅(far까지 연장) ---
@@ -581,6 +607,40 @@ class LaneDetector:
                     lane_w = lane_w * 0.7 + wobs * 0.3
         else:
             lane_w = float(c.lane_width_px)   # 학습 off: 항상 고정값(표류 없음)
+
+        # --- 단일 기준선 고정 추종(single_anchor): 오른선 하나만, 붕괴/정체성 우회 ---
+        if c.single_anchor:
+            right = (c.anchor_side != 'left')          # 기본 오른쪽 경계선
+            anchor = right_line if right else left_line
+            anchor_ok = right_ok if right else left_ok
+            if anchor_ok:
+                self._anchor_fit = anchor              # 이번 프레임 실검출 → 갱신
+                self._anchor_age = 0
+                n_side = sum(rfound if right else lfound)
+                conf = n_side / float(c.nwindows)
+            elif self._anchor_fit is not None and self._anchor_age < c.anchor_hold_frames:
+                anchor = self._anchor_fit              # 소실: 직전 기준선 유지(점선 갭 coast)
+                self._anchor_age += 1
+                conf = max(c.seed_lock_conf, self._last_conf * 0.9)  # hold 중 lock 유지
+            else:
+                anchor = None                          # 완전 소실: 직진 폴백
+                conf = 0.0
+            if anchor is not None:
+                bias = (-lane_w / 2.0) if right else (lane_w / 2.0)  # 오른선→중심은 왼쪽(-)
+                cxs = anchor + bias
+                centerline = [(float(cxs[i]), cys[i]) for i in range(c.nwindows)]
+                near = float(anchor[0])
+                if right:
+                    self._last_rightx, self._last_leftx = near, near - lane_w
+                else:
+                    self._last_leftx, self._last_rightx = near, near + lane_w
+            else:
+                centerline = [(float(midpoint), cys[i]) for i in range(c.nwindows)]
+                self._last_leftx, self._last_rightx = leftx, rightx
+            if c.lane_width_learn and lane_w > 1.0:
+                self._lane_width_px = lane_w
+            self._last_conf = conf
+            return centerline, conf
 
         # --- 붕괴(collapse) 방지 ---
         # 노이즈/한쪽 선 끊김으로 좌·우 두 탐색창이 같은 실선 하나에 달라붙으면
@@ -686,6 +746,39 @@ class LaneDetector:
         ends = np.nonzero(edges == -1)[0]
         return int((ends - starts).max())
 
+    def _stopline_hough(self, mask: np.ndarray, y0: int, h: int, w: int, debug):
+        """@brief 정지선 Hough 검출(작년 검증 방식). @return (detected, nearest_row|-1, diag_len, n_seg).
+
+        @param mask 정지선색 이진 마스크(하단 ROI 좌표). @param y0 ROI 상단의 BEV 행.
+        @details 마스크에 Canny→HoughLinesP로 선분을 뽑고 '수평'(|angle|<
+        stopline_angle_tol_deg 또는 >180-tol) 선분 길이를 합산, stopline_len_threshold를
+        넘으면 검출. 세로 차선은 각도로 배제된다. 거리용 최근접 행은 수평 선분 중 가장
+        바닥(y 큰)을 ROI→BEV로 보정(+y0). 진단: (총 수평길이/폭, 수평 선분 수).
+        """
+        c = self.calib
+        edges = cv2.Canny(mask, int(c.stopline_canny_lo), int(c.stopline_canny_hi))
+        lines = cv2.HoughLinesP(
+            edges, 1, math.pi / 180.0, int(c.stopline_hough_thresh),
+            minLineLength=int(c.stopline_hough_min_len),
+            maxLineGap=int(c.stopline_hough_max_gap))
+        tol = float(c.stopline_angle_tol_deg)
+        total_len = 0.0
+        seg_ys: List[float] = []
+        if lines is not None:
+            for ln in lines:
+                # HoughLinesP 반환 형태가 OpenCV 버전따라 (N,1,4)/(N,4) → ravel로 통일.
+                x1, y1, x2, y2 = (int(v) for v in np.asarray(ln).reshape(-1)[:4])
+                ang = abs(math.degrees(math.atan2(y2 - y1, x2 - x1)))
+                if ang < tol or ang > 180.0 - tol:      # 수평 선분만(세로 차선 배제)
+                    total_len += math.hypot(x2 - x1, y2 - y1)
+                    seg_ys.append((y1 + y2) / 2.0)
+                    if debug is not None:
+                        cv2.line(debug, (x1, y1 + y0), (x2, y2 + y0), (0, 255, 255), 2)
+        detected = total_len > float(c.stopline_len_threshold)
+        nearest_row = float(max(seg_ys) + y0) if (detected and seg_ys) else -1.0
+        diag_len = total_len / float(max(1, w))          # 진단: 폭 대비 총 수평길이
+        return (detected, nearest_row, diag_len, len(seg_ys))
+
     def _stopline(self, bev: np.ndarray, debug):
         """@brief 정지선 검출 + 최근접 정지선의 BEV 행(row). @return (detected, row|-1).
 
@@ -699,7 +792,12 @@ class LaneDetector:
         """
         c = self.calib
         h, w = bev.shape[:2]
-        roi_h = int(min(max(1, c.stopline_roi_h), h))
+        # stopline_roi_h <= 0 이면 하단 ROI 없이 BEV '전체'에서 정지선 탐색(전체화면 모드).
+        # >0 이면 하단 그 높이[px]만 검사(기존 동작). y0 오프셋은 아래 좌표 복원(nearest_row,
+        # hough)에 그대로 쓰이므로 두 경로 모두 정확하다. 전체화면은 원거리/커브에서 가로로
+        # 눕는 차선·먼 정지선까지 잡을 수 있어 조기검출↑ 대신 오검↑ — 폭 상한(stopline_max_width_m)
+        # ·min_rows·판단단 heading 게이트(decision.stopline_heading_gate)가 남는 방어선이다.
+        roi_h = h if c.stopline_roi_h <= 0 else int(min(c.stopline_roi_h, h))
         y0 = h - roi_h
         roi = bev[y0:h, :]
 
@@ -714,6 +812,10 @@ class LaneDetector:
             mask = cv2.bitwise_or(yellow, self._white_mask(hls))
         else:  # "yellow"(기본)
             mask = yellow
+
+        # 방식 스위치: hough(작년 검증 가로선 길이합) or coverage(행 커버리지, 아래).
+        if str(getattr(c, "stopline_method", "coverage")).lower() == "hough":
+            return self._stopline_hough(mask, y0, h, w, debug)
 
         # 행별 정지선색 커버리지(폭 대비 비율). 정지선 행은 폭을 넓게 덮는다.
         mb = mask.astype(bool)

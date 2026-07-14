@@ -631,17 +631,26 @@ function refreshCameraFrame() {
   image.src = `${config.frameEndpoint}?t=${Date.now()}`;
 }
 
-function refreshImageByEndpoint(targetElement, endpoint) {
+function refreshImageByEndpoint(targetElement, endpoint, onDone) {
   if (!targetElement) {
+    if (onDone) {
+      onDone();
+    }
     return;
   }
 
   const image = new Image();
   image.onload = () => {
     targetElement.src = image.src;
+    if (onDone) {
+      onDone();
+    }
   };
   image.onerror = () => {
     targetElement.src = config.placeholderUrl;
+    if (onDone) {
+      onDone();
+    }
   };
   image.src = `${endpoint}?t=${Date.now()}`;
 }
@@ -651,12 +660,27 @@ function refreshDebugFrames() {
     return;
   }
 
+  const requests = [
+    [elements.debugFrameSlidingWindow, config.debugFrameSlidingWindowEndpoint],
+    [elements.debugFrameBev, config.debugFrameBevEndpoint],
+    [elements.debugFrameLaneEdge, config.debugFrameLaneEdgeEndpoint],
+    [elements.debugFrameYolo, config.debugFrameYoloEndpoint],
+  ];
+
+  // Hold the in-flight guard until every panel this round settles, so a slow
+  // network/server can't accumulate a backlog of debug-frame requests.
   debugImageRequestInFlight = true;
-  refreshImageByEndpoint(elements.debugFrameSlidingWindow, config.debugFrameSlidingWindowEndpoint);
-  refreshImageByEndpoint(elements.debugFrameBev, config.debugFrameBevEndpoint);
-  refreshImageByEndpoint(elements.debugFrameLaneEdge, config.debugFrameLaneEdgeEndpoint);
-  refreshImageByEndpoint(elements.debugFrameYolo, config.debugFrameYoloEndpoint);
-  debugImageRequestInFlight = false;
+  let pending = requests.length;
+  const onDone = () => {
+    pending -= 1;
+    if (pending <= 0) {
+      debugImageRequestInFlight = false;
+    }
+  };
+
+  requests.forEach(([targetElement, endpoint]) => {
+    refreshImageByEndpoint(targetElement, endpoint, onDone);
+  });
 }
 
 function startPolling() {

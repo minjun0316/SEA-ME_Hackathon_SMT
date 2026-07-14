@@ -19,9 +19,9 @@ mission_cues_node:
     # 판단 WAIT_START_SIGNAL이 traffic_light=GREEN을 보면 출발. 오출발 방지로 초록을
     # tl_green_confirm_sec 동안 연속 확정해야 GREEN 발행. 실패해도 aruco는 계속 동작.
     yolo_enable: true               # false면 신호등/체커보드 stub(aruco만). CPU 아끼려면 false.
-    yolo_model_path: best_ncnn_model  # models/ 하위(ncnn 디렉토리 또는 best.pt)
+    yolo_model_path: best.pt        # [07-14] 새 학습 pt 직접 추론(NCNN 재export 전 검증용). ncnn 복귀 시 best_ncnn_model.
     yolo_conf: 0.35                 # 박스 인정 최소 신뢰도. 오검 나면 ↑, 놓치면 ↓
-    yolo_imgsz: 320                 # 추론 입력 크기(테스트 노드와 동일)
+    yolo_imgsz: 640                 # [07-14] 320→640: 학습 해상도와 일치(먼 신호등 놓침 해결). CPU 느리면 480로.
     yolo_max_infer_hz: 6.0          # 추론 상한 fps(카메라 26fps 다 안 돌림→CPU 경합↓)
     yolo_cv_threads: 1              # OpenCV 스레드 상한
     yolo_torch_threads: 2           # torch 스레드 상한
