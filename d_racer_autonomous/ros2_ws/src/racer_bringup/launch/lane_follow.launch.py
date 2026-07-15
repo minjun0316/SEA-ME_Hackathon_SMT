@@ -51,8 +51,9 @@ def generate_launch_description():
         DeclareLaunchArgument('use_decision', default_value='False',
                               description='반응형 판단 게이트(정지선/아루코 정지) + 신호등 출발 + 팻말→차선 지시. use_mission과 동시 사용 금지(둘 다 drive_command 발행).'),
         DeclareLaunchArgument('traffic_light_start', default_value='True',
-                              description='신호등 출발 게이트(use_decision=True일 때). True=초록불 볼 때까지 정지 대기(1회 래치 후 계속 주행). '
-                                          'YOLO가 초록 못 잡아 출발 안 하면 False로 끄고 주행.'),
+                              description='신호등 출발 게이트(use_decision / use_mission 양쪽 적용). True=초록불 볼 때까지 정지 대기(1회 래치 후 계속 주행). '
+                                          'YOLO가 초록 못 잡아 출발 안 하면, 또는 팻말/차선만 따로 검증할 땐 False로 끄고 주행. '
+                                          '(use_mission일 땐 WAIT_START_SIGNAL을 건너뛰고 LANE_FOLLOW에서 시작.) ⚠ 대회 주행은 True.'),
         DeclareLaunchArgument('traffic_light_finish', default_value='True',
                               description='빨간불 종료(use_decision=True일 때). True=출발 후 finish_grace_sec 지나고 '
                                           '빨간불 보면 영구 정지(코스 종료). 테스트 중 조기종료가 귀찮으면 False.'),
@@ -220,6 +221,9 @@ def generate_launch_description():
         parameters=[{
             'rate_hz': LaunchConfiguration('rate_hz'),
             'lane_timeout': LaunchConfiguration('lane_timeout'),
+            # decision_node의 동명 인자와 같은 의미(False=초록불 대기 건너뜀, 테스트용).
+            'traffic_light_start': ParameterValue(
+                LaunchConfiguration('traffic_light_start'), value_type=bool),
         }],
         condition=IfCondition(LaunchConfiguration('use_mission')),
     )

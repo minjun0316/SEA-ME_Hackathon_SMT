@@ -193,13 +193,26 @@ class MissionConfig:
     slow_speed_scale: float = 0.5            ##< 장애물 구역 등 감속 구간 속도 상한 배율.
     # --- YOLO 추론 게이트 ---
     yolo_gate_enable: bool = True            ##< True=페이즈별 YOLO on/off(출발·도착만 ON, 주행중 OFF로 FPS 확보). False=게이트 끔(항상 ON=기존 동작).
-    # --- 방향 팻말 분기(SIGN_BRANCH) — 07-14 ---
-    # 팻말색 트리거로 진입하면 팻말 YOLO(sign_enable)를 켜고 좌/우 판정을 래치, 흰선
-    # 추종은 유지한 채 조향에 steer_bias만 얹는다. 고정시간(룰베이스) 경과하면 복귀.
-    sign_branch_duration: float = 2.0        ##< SIGN_BRANCH 지속 고정시간[s](경과 시 LANE_FOLLOW 복귀).
+    # --- 출발 신호등 게이트 (07-15 밤, 테스트용) ---
+    # False면 WAIT_START_SIGNAL을 건너뛰고 LANE_FOLLOW에서 시작한다 = 초록불 없이 즉시 출발.
+    # 팻말/차선만 따로 검증할 때 신호등을 준비하지 않아도 되게 하는 **테스트 스위치**다.
+    # ⚠ 대회 주행은 반드시 True(출발 신호 준수). decision_node의 동명 파라미터와 같은 의미.
+    traffic_light_start_enable: bool = True  ##< False=초록불 대기 건너뛰고 즉시 주행 시작(테스트용).
+    # --- 방향 팻말 분기(SIGN_BRANCH) — 07-15 밤 재설계 ---
+    # 팻말 YOLO가 좌/우를 conf≥sign_min_conf로 읽으면 진입 → 방향 래치 → turn_hint로
+    # 인지에 앵커 차선을 지시(그쪽 선 하나만 추종 = 폐루프). 고정 조향 bias는 폐기.
+    sign_branch_duration: float = 5.0        ##< SIGN_BRANCH 지속 **상한**[s](경과 시 LANE_FOLLOW 복귀).
     sign_branch_speed_scale: float = 0.5     ##< 팻말 분기 중 속도 상한 배율(감속).
-    # 조향 bias 크기(트림 전 raw[-1,1] 규약: +=좌, -=우). SIGN_LEFT→+, SIGN_RIGHT→-.
-    steer_bias_value: float = 0.15           ##< 팻말 지시쪽으로 얹을 정규화 조향 offset 크기.
+    # [07-16] 팻말이 시야에서 사라지고 이만큼 지나면 SIGN_BRANCH 종료(= offset 해제).
+    # 왜 필요한가: offset은 '도로 한가운데 팻말'을 비켜 지나는 용도인데, 차선폭이 36.6cm
+    # (=중심→선 18.3cm)뿐이라 9cm offset을 팻말을 지난 뒤에도 물고 있으면 바깥 바퀴와
+    # 흰선 사이 여유가 1.8cm밖에 안 남아 **차선을 못 따라가고 이탈한다**(07-16 실차).
+    # 고정 타이머로는 못 푼다 — 통과 시점은 속도에 달렸고, 그 속도는 배터리에 민감하다
+    # (sign_branch_speed_scale=0.2 = 데드밴드 문턱 위 17µs). 팻말이 **시야에서 사라진 것**이
+    # 곧 '거의 다 왔다'는 물리적 사건이므로 그걸 기준으로 삼는다.
+    # 0으로 두면 옛 동작(고정시간만). 팻말을 지나기 전에 풀려 들이받으면 ↑,
+    # 지나고도 한참 치우쳐 달리면 ↓.
+    sign_lost_release_sec: float = 1.0       ##< 팻말 무관측 이만큼 지속 시 SIGN_BRANCH 종료. 0=끔.
     # --- 동적 장애물(아루코) — 07-15 ---
     # 아루코가 사라졌을 때 '진짜 재출발'과 '오검출이었음'을 가르는 최소 체류시간.
     # 이보다 짧게 머물렀으면 오검출로 보고 FINISH_WATCH가 아니라 LANE_FOLLOW로 되돌린다
@@ -208,6 +221,21 @@ class MissionConfig:
     #   요구치는 (이 값 - hold_sec) = '심판이 마커를 실제로 들고 있어야 하는 시간'이다.
     #   현재 hold=1.0 + 이 값 2.0 → 실효 1.0s. 심판이 더 짧게 보여주면 ↓.
     obstacle_min_dwell_sec: float = 2.0      ##< OBSTACLE_ZONE 최소 체류[s]. 미달 시 오검출로 보고 LANE_FOLLOW 복귀.
+    # --- 빨간불 정지 해제(FINISH_STOP → FINISH_WATCH) — 07-15c ---
+    # FINISH_STOP은 원래 편도(전이 없음)라 빨강 오검출 하나가 코스를 복구 불가로 끝냈다.
+    # 대회 중엔 동글을 빼므로 페이즈를 손으로 되돌릴 수도 없어 그대로 미션 실패였다.
+    # → 마지막으로 빨강을 본 지 이 시간이 지나면 FINISH_WATCH로 복귀해 주행을 재개한다.
+    # 이 값이 곧 **최소 정지시간**이기도 하다: FINISH_STOP 진입은 '방금 빨강을 봤다'는
+    # 뜻이라 무관측 타이머가 0에서 시작하므로, 아무리 빨라도 이 시간은 서 있는다
+    # (= 심판에게 '정지했음'을 보여주는 증명. 정지 후 재출발 자체엔 패널티가 없다).
+    # 세 경우 모두 이 조건 하나로 처리된다:
+    #   진짜 빨강(심판이 계속 들고 있음) → 타이머가 계속 0으로 리셋 → 영구 정지(정상 종료).
+    #   오검출 → 빨강이 사라짐 → 복귀 → 미션 계속 → 진짜 빨강에서 다시 정지(코스 완주).
+    #   오버슛(정지했으나 빨강이 화면 밖) → 복귀. 증명은 이미 끝났으므로 손해 없음.
+    # ⚠ 0=끔이면 옛 동작(영구 정지). 오검출 복구가 불가능해지므로 대회 주행은 >0 권장.
+    # ⚠ 못 고치는 케이스: 오검출 원인이 시야 안 '정적인' 물체면 멈춘 차의 시야가 얼어붙어
+    #   계속 검출된다 → 영구 정지. 그건 인지의 red_min_box_h_frac(거리 게이트) 몫이다.
+    finish_stop_release_sec: float = 10.0    ##< 빨강 마지막 관측 후 이 시간 지나면 FINISH_WATCH 복귀(=최소 정지시간). 0=끔(영구 정지).
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MissionConfig":

@@ -3,8 +3,9 @@
 
 미션 페이즈 전이(WAIT_START → LANE_FOLLOW → SIGN_BRANCH → LANE_FOLLOW → OBSTACLE_ZONE
 → FINISH_WATCH → FINISH_STOP)와 각 상태의 정지 게이트·인지 지시(roi_mode/yolo_enable/
-sign_enable)·조향 bias를 검증한다. 지름길(노랑)·로터리·체커보드 도착은 폐기. 설계:
-docs/mission_fsm.md
+sign_enable/turn_hint)를 검증한다. 지름길(노랑)·로터리·체커보드 도착은 폐기.
+07-15 밤 팻말 재설계: 진입 트리거=팻말 YOLO 방향(색 트리거 폐기), 기동=turn_hint 앵커
+차선 지시(고정 steer_bias 폐기 → 상시 0). 설계: docs/mission_fsm.md
 """
 import os
 
@@ -102,11 +103,11 @@ def test_stopline_does_not_branch_in_lane_follow():
 
 # --- 방향 팻말 분기(SIGN_BRANCH) -----------------------------------------
 
-def test_sign_color_enters_branch_and_slows():
-    """OpenCV 팻말색(sign_detected) → SIGN_BRANCH 진입 + 감속 + 팻말 YOLO ON."""
+def test_sign_direction_enters_branch_and_slows():
+    """팻말 YOLO 방향(sign_direction≠NONE) → SIGN_BRANCH 진입 + 감속 + 팻말 YOLO ON."""
     seq = MissionSequencer(_cfg(sign_branch_duration=1.0, sign_branch_speed_scale=0.5))
     _to_lane_follow(seq)
-    cmd = seq.update(_obs(sign_detected=True), dt=0.05)
+    cmd = seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)
     assert seq.phase == MissionPhase.SIGN_BRANCH
     assert cmd.go is True
     assert cmd.speed_scale <= 0.5
@@ -114,43 +115,63 @@ def test_sign_color_enters_branch_and_slows():
     assert cmd.yolo_enable is False         # 신호등 YOLO는 OFF.
 
 
-def test_sign_direction_right_biases_steering_negative():
-    """팻말 우측 지시 → 조향 bias 음수(우), 좌측 지시 → 양수(좌)."""
-    seq = MissionSequencer(_cfg(sign_branch_duration=1.0, steer_bias_value=0.2))
+def test_sign_color_alone_does_not_enter_branch():
+    """07-15 밤: OpenCV 팻말색은 더 이상 트리거가 아니다(YOLO 방향만 진입시킨다)."""
+    seq = MissionSequencer(_cfg(sign_branch_duration=1.0))
     _to_lane_follow(seq)
-    cmd = seq.update(_obs(sign_detected=True, sign_direction=SignDirection.RIGHT), dt=0.05)
-    assert seq.phase == MissionPhase.SIGN_BRANCH
-    assert cmd.steer_bias == -0.2
+    seq.update(_obs(sign_detected=True, sign_direction=SignDirection.NONE), dt=0.05)
+    assert seq.phase == MissionPhase.LANE_FOLLOW
 
-    seq2 = MissionSequencer(_cfg(sign_branch_duration=1.0, steer_bias_value=0.2))
+
+def test_sign_yolo_on_while_hunting_sign():
+    """진입 트리거가 팻말 YOLO라 LANE_FOLLOW에서도 켜져 있어야 한다(논리 순환 방지)."""
+    seq = MissionSequencer(_cfg(sign_branch_duration=1.0))
+    _to_lane_follow(seq)
+    cmd = seq.update(_obs(), dt=0.05)       # 팻말 아직 안 보임.
+    assert seq.phase == MissionPhase.LANE_FOLLOW
+    assert cmd.sign_enable is True
+
+
+def test_sign_direction_sets_turn_hint_not_steer_bias():
+    """팻말 방향 → 인지 앵커 지시(turn_hint). 고정 조향 bias는 폐기(항상 0)."""
+    seq = MissionSequencer(_cfg(sign_branch_duration=1.0))
+    _to_lane_follow(seq)
+    cmd = seq.update(_obs(sign_direction=SignDirection.RIGHT), dt=0.05)
+    assert seq.phase == MissionPhase.SIGN_BRANCH
+    assert cmd.turn_hint == TurnHint.RIGHT
+    assert cmd.steer_bias == 0.0
+
+    seq2 = MissionSequencer(_cfg(sign_branch_duration=1.0))
     _to_lane_follow(seq2)
-    cmd2 = seq2.update(_obs(sign_detected=True, sign_direction=SignDirection.LEFT), dt=0.05)
-    assert cmd2.steer_bias == +0.2
+    cmd2 = seq2.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)
+    assert cmd2.turn_hint == TurnHint.LEFT
+    assert cmd2.steer_bias == 0.0
 
 
 def test_sign_direction_latches_through_momentary_none():
-    """분기 중 방향이 잠깐 NONE으로 튀어도 첫 검출 방향을 유지(bias 안 풀림)."""
-    seq = MissionSequencer(_cfg(sign_branch_duration=1.0, steer_bias_value=0.2))
+    """분기 중 방향이 잠깐 NONE으로 튀어도 첫 검출 방향을 유지(앵커 지시 안 풀림)."""
+    seq = MissionSequencer(_cfg(sign_branch_duration=1.0))
     _to_lane_follow(seq)
-    seq.update(_obs(sign_detected=True, sign_direction=SignDirection.RIGHT), dt=0.05)
-    cmd = seq.update(_obs(sign_detected=True, sign_direction=SignDirection.NONE), dt=0.05)
+    seq.update(_obs(sign_direction=SignDirection.RIGHT), dt=0.05)
+    cmd = seq.update(_obs(sign_direction=SignDirection.NONE), dt=0.05)
     assert seq.phase == MissionPhase.SIGN_BRANCH
-    assert cmd.steer_bias == -0.2           # 래치 유지.
+    assert cmd.turn_hint == TurnHint.RIGHT  # 래치 유지.
 
 
 def test_sign_branch_returns_after_duration_and_latches_done():
-    """고정시간 경과 → LANE_FOLLOW 복귀, bias 0, 이후 팻말색 재검출해도 재진입 안 함."""
+    """고정시간 경과 → LANE_FOLLOW 복귀, 앵커 지시 해제, 이후 팻말 재검출해도 재진입 안 함."""
     seq = MissionSequencer(_cfg(sign_branch_duration=0.1))
     _to_lane_follow(seq)
-    seq.update(_obs(sign_detected=True, sign_direction=SignDirection.LEFT), dt=0.05)
+    seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)
     assert seq.phase == MissionPhase.SIGN_BRANCH
     # 고정시간(0.1s) 넘기면 복귀.
-    cmd = seq.update(_obs(sign_detected=True), dt=0.1)
+    cmd = seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.1)
     assert seq.phase == MissionPhase.LANE_FOLLOW
+    assert cmd.turn_hint == TurnHint.NONE   # 인지는 adaptive 기하학으로 복귀.
     assert cmd.steer_bias == 0.0
-    assert cmd.sign_enable is False
-    # 팻말색 다시 봐도 1회성 래치라 재진입 안 함.
-    seq.update(_obs(sign_detected=True), dt=0.05)
+    assert cmd.sign_enable is False         # 팻말 끝 → CPU 회수.
+    # 팻말 다시 봐도 1회성 래치라 재진입 안 함.
+    seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)
     assert seq.phase == MissionPhase.LANE_FOLLOW
 
 
@@ -158,7 +179,7 @@ def test_aruco_preempts_sign_branch():
     """분기 중 아루코 보이면 정지 구역 우선."""
     seq = MissionSequencer(_cfg(sign_branch_duration=1.0))
     _to_lane_follow(seq)
-    seq.update(_obs(sign_detected=True), dt=0.05)
+    seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)
     assert seq.phase == MissionPhase.SIGN_BRANCH
     seq.update(_obs(aruco_present=True), dt=0.05)
     assert seq.phase == MissionPhase.OBSTACLE_ZONE
@@ -206,7 +227,7 @@ def test_short_aruco_keeps_sign_branch_available():
     _to_lane_follow(seq)
     seq.update(_obs(aruco_present=True), dt=0.05)    # 오검출.
     seq.update(_obs(aruco_present=False), dt=0.05)   # → LANE_FOLLOW 복귀.
-    seq.update(_obs(sign_detected=True), dt=0.05)    # 팻말은 여전히 분기시켜야 한다.
+    seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)  # 팻말은 여전히 분기시켜야 한다.
     assert seq.phase == MissionPhase.SIGN_BRANCH
 
 
@@ -241,11 +262,79 @@ def test_finish_watch_stops_on_red():
     assert cmd.state == DriveState.STOP and cmd.go is False
 
 
+# --- 빨간불 정지 해제(FINISH_STOP → FINISH_WATCH) — 07-15c -----------------
+# 편도 종착 상태라 빨강 오검출 하나가 코스를 복구 불가로 끝내던 것을 막는다.
+# 심판은 멈춘 뒤에도 빨강을 계속 들고 있으므로 '빨강이 사라짐' = 오검출이었거나
+# 화면 밖으로 나갔거나 뿐 → 어느 쪽이든 복귀가 안전하다. 설계: docs/mission_fsm.md.
+
+def _to_finish_stop(seq):
+    """FINISH_STOP까지 밀어넣는다(빨간불 1회 관측)."""
+    _to_obstacle(seq)
+    seq.update(_obs(aruco_present=False), dt=0.05)                  # → FINISH_WATCH
+    seq.update(_obs(traffic_light=TrafficLight.RED), dt=0.05)       # → FINISH_STOP
+    assert seq.phase == MissionPhase.FINISH_STOP
+
+
+def test_finish_stop_releases_after_red_disappears():
+    """오검출로 멈춘 경우: 빨강이 사라지면 해제시간 뒤 FINISH_WATCH 복귀 → 미션 계속."""
+    seq = MissionSequencer(_cfg(finish_stop_release_sec=10.0))
+    _to_finish_stop(seq)
+    seq.update(_obs(traffic_light=TrafficLight.NONE), dt=9.9)       # 아직 10s 미만
+    assert seq.phase == MissionPhase.FINISH_STOP
+    cmd = seq.update(_obs(traffic_light=TrafficLight.NONE), dt=0.2)  # 누적 10.1s
+    assert seq.phase == MissionPhase.FINISH_WATCH
+    assert cmd.go is True                                            # 주행 재개.
+
+
+def test_finish_stop_holds_while_red_visible():
+    """진짜 빨강(심판이 계속 들고 있음): 타이머가 계속 리셋 → 영구 정지(정상 종료)."""
+    seq = MissionSequencer(_cfg(finish_stop_release_sec=10.0))
+    _to_finish_stop(seq)
+    for _ in range(200):                                            # 20초간 빨강 유지.
+        cmd = seq.update(_obs(traffic_light=TrafficLight.RED), dt=0.1)
+    assert seq.phase == MissionPhase.FINISH_STOP
+    assert cmd.go is False
+
+
+def test_finish_stop_release_is_minimum_stop_time():
+    """해제시간 = 최소 정지시간. 진입 직후 빨강이 사라져도 그 시간은 서 있어야 한다.
+
+    (오버슛으로 정지 후 빨강이 화면 밖으로 나간 경우 = '정지했음' 증명 구간.)
+    """
+    seq = MissionSequencer(_cfg(finish_stop_release_sec=10.0))
+    _to_finish_stop(seq)
+    elapsed = 0.0
+    while seq.phase == MissionPhase.FINISH_STOP and elapsed < 30.0:
+        seq.update(_obs(traffic_light=TrafficLight.NONE), dt=0.1)   # 진입 직후부터 무관측.
+        elapsed += 0.1
+    assert seq.phase == MissionPhase.FINISH_WATCH
+    assert elapsed >= 10.0                                          # 10초는 반드시 정지.
+
+
+def test_finish_stop_can_release_repeatedly():
+    """래치가 아니다: 오검출이 여러 번 나도 그때마다 복귀해 미션이 이어진다."""
+    seq = MissionSequencer(_cfg(finish_stop_release_sec=10.0))
+    _to_finish_stop(seq)
+    for _ in range(3):
+        seq.update(_obs(traffic_light=TrafficLight.NONE), dt=10.1)  # 해제 → FINISH_WATCH
+        assert seq.phase == MissionPhase.FINISH_WATCH
+        seq.update(_obs(traffic_light=TrafficLight.RED), dt=0.05)   # 또 오검출 → 정지
+        assert seq.phase == MissionPhase.FINISH_STOP
+
+
+def test_finish_stop_release_disabled_keeps_terminal():
+    """0=끔이면 옛 동작(영구 정지) 그대로 — 되돌리기용 스위치."""
+    seq = MissionSequencer(_cfg(finish_stop_release_sec=0.0))
+    _to_finish_stop(seq)
+    seq.update(_obs(traffic_light=TrafficLight.NONE), dt=60.0)
+    assert seq.phase == MissionPhase.FINISH_STOP
+
+
 def test_full_sequence_reaches_finish():
     seq = MissionSequencer(_cfg(sign_branch_duration=0.1))
     _to_lane_follow(seq)
-    seq.update(_obs(sign_detected=True, sign_direction=SignDirection.LEFT), dt=0.05)  # 팻말 분기
-    seq.update(_obs(sign_detected=False), dt=0.1)   # 고정시간 경과 → LANE_FOLLOW
+    seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)  # 팻말 분기
+    seq.update(_obs(), dt=0.1)                      # 고정시간 경과 → LANE_FOLLOW
     assert seq.phase == MissionPhase.LANE_FOLLOW
     seq.update(_obs(aruco_present=True), dt=0.05)    # 정지 구역
     seq.update(_obs(aruco_present=True), dt=2.5)     # 마커 든 채 최소 체류시간 충족
@@ -265,9 +354,9 @@ def test_reset_returns_to_wait():
 # --- 설정 ----------------------------------------------------------------
 
 def test_config_defaults():
-    cfg = MissionConfig.from_dict({"slow_speed_scale": 0.4, "steer_bias_value": 0.3})
+    cfg = MissionConfig.from_dict({"slow_speed_scale": 0.4, "sign_branch_duration": 4.0})
     assert cfg.slow_speed_scale == 0.4
-    assert cfg.steer_bias_value == 0.3
+    assert cfg.sign_branch_duration == 4.0
 
 
 def test_mission_yaml_loads():
@@ -288,13 +377,18 @@ def test_yolo_gate_on_while_waiting_start():
 
 
 def test_yolo_gate_off_while_driving():
-    """초록 확인 후 차선주행 구간엔 신호등/팻말 YOLO 둘 다 OFF(FPS 확보)."""
+    """초록 확인 후 차선주행 구간엔 신호등 YOLO OFF(FPS 확보).
+
+    07-15 밤: 팻말 YOLO(sign_enable)는 여기서 OFF가 아니다 — 분기 진입 트리거가
+    팻말 YOLO 자체로 바뀌어, 팻말을 아직 안 지났다면 주행 중에도 켜 둬야 한다
+    (SIGN_BRANCH 전용이면 영영 진입 못 하는 논리 순환). 팻말을 지나면 그때 OFF.
+    """
     seq = MissionSequencer(_cfg())
     _to_lane_follow(seq)
     cmd = _tick(seq)
     assert seq.phase == MissionPhase.LANE_FOLLOW
     assert cmd.yolo_enable is False
-    assert cmd.sign_enable is False
+    assert cmd.sign_enable is True
 
 
 def test_yolo_gate_turns_on_when_aruco_appears():
@@ -320,13 +414,16 @@ def test_yolo_gate_latches_through_finish():
 
 
 def test_sign_gate_only_in_branch():
-    """팻말 YOLO(sign_enable)는 SIGN_BRANCH에서만 ON."""
-    seq = MissionSequencer(_cfg(sign_branch_duration=1.0))
+    """팻말 YOLO(sign_enable)는 팻말을 찾는 LANE_FOLLOW + SIGN_BRANCH에서 ON, 분기 후 OFF."""
+    seq = MissionSequencer(_cfg(sign_branch_duration=0.1))
     _to_lane_follow(seq)
-    assert _tick(seq).sign_enable is False
-    cmd = seq.update(_obs(sign_detected=True), dt=0.05)
+    assert _tick(seq).sign_enable is True    # 아직 팻말 전 → 탐색해야 하므로 ON.
+    cmd = seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)
     assert seq.phase == MissionPhase.SIGN_BRANCH
     assert cmd.sign_enable is True
+    cmd = seq.update(_obs(), dt=0.1)         # 분기 종료 → 1회성 래치 → OFF.
+    assert seq.phase == MissionPhase.LANE_FOLLOW
+    assert cmd.sign_enable is False
 
 
 def test_yolo_gate_disabled_always_on():
@@ -347,3 +444,31 @@ def test_yolo_gate_resets_with_sequencer():
     assert cmd.yolo_enable is True
     _to_lane_follow(seq)
     assert _tick(seq).yolo_enable is False  # 래치 풀렸으니 주행 OFF.
+
+
+# --- 출발 신호등 게이트 우회(테스트 스위치) -------------------------------
+
+def test_traffic_light_start_disabled_starts_driving_immediately():
+    """traffic_light_start_enable=False → WAIT_START_SIGNAL 건너뛰고 즉시 주행."""
+    seq = MissionSequencer(_cfg(traffic_light_start_enable=False))
+    assert seq.phase == MissionPhase.LANE_FOLLOW      # 초록불 없이 바로 주행 페이즈.
+    cmd = _tick(seq)                                  # 신호등 관측 없음.
+    assert cmd.go is True
+    assert seq.phase == MissionPhase.LANE_FOLLOW
+
+
+def test_traffic_light_start_enabled_still_waits():
+    """기본(True)은 종전대로 초록불 대기 — 대회 주행 동작이 안 바뀐다."""
+    seq = MissionSequencer(_cfg())
+    assert seq.phase == MissionPhase.WAIT_START_SIGNAL
+    assert _tick(seq).go is False
+    seq.update(_obs(traffic_light=TrafficLight.GREEN), dt=0.05)
+    assert seq.phase == MissionPhase.LANE_FOLLOW
+
+
+def test_traffic_light_start_disabled_still_reaches_sign_branch():
+    """우회로 시작해도 팻말 분기는 정상 동작(= 이 스위치로 팻말만 검증 가능)."""
+    seq = MissionSequencer(_cfg(traffic_light_start_enable=False,
+                                sign_branch_duration=1.0))
+    seq.update(_obs(sign_direction=SignDirection.RIGHT), dt=0.05)
+    assert seq.phase == MissionPhase.SIGN_BRANCH

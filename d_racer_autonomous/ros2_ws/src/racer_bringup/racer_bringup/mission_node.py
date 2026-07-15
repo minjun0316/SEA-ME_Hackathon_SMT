@@ -82,6 +82,9 @@ class MissionNode(Node):
         self.declare_parameter('lane_timeout', 0.3)
         # 비우면 core_root/config 의 decision.yaml + mission.yaml 병합.
         self.declare_parameter('config_files', [''])
+        # 초록불 대기 우회(테스트용). config(mission.yaml)의 값을 덮어쓴다.
+        # 팻말/차선만 검증할 때 신호등을 준비하지 않아도 되게 하는 스위치 — 대회는 True.
+        self.declare_parameter('traffic_light_start', True)
 
         lane_topic = str(self.get_parameter('lane_status_topic').value)
         cues_topic = str(self.get_parameter('mission_cues_topic').value)
@@ -96,6 +99,9 @@ class MissionNode(Node):
 
         config_files = self._resolve_config_files()
         self.config = load_config(*config_files)
+        # ROS 파라미터가 config를 덮어쓴다(런치/CLI에서 초록불 대기를 끄기 위함).
+        tl_start = bool(self.get_parameter('traffic_light_start').value)
+        self.config.mission.traffic_light_start_enable = tl_start
         self.seq = MissionSequencer(self.config.mission, self.config.decision)
 
         self._last_lane = None
@@ -111,8 +117,14 @@ class MissionNode(Node):
             f'  구독 lane_status={lane_topic}, mission_cues={cues_topic}\n'
             f'  발행 drive_command={cmd_topic}, lane_mode={mode_topic}\n'
             f'  rate_hz={self.rate_hz} lane_timeout={self.lane_timeout}s\n'
+            f'  traffic_light_start={tl_start}'
+            f'{"" if tl_start else " ← 초록불 대기 건너뜀(테스트)"}\n'
             '  범위: 6-state 미션 SM(+내부 반응형). ROI/mask/target은 인지 몫.'
         )
+        if not tl_start:
+            self.get_logger().warn(
+                '⚠ traffic_light_start=False — 초록불 없이 즉시 출발한다(테스트 전용). '
+                '대회 주행에선 반드시 True로 되돌릴 것.')
 
         self.pub_cmd = self.create_publisher(DriveCommand, cmd_topic, 1)
         self.pub_mode = self.create_publisher(LaneMode, mode_topic, 1)
@@ -188,16 +200,16 @@ class MissionNode(Node):
         out.speed_scale = float(cmd.speed_scale)
         out.lookahead_scale = float(cmd.lookahead_scale)
         out.steer_limit = float(cmd.steer_limit)
-        out.steer_bias = float(cmd.steer_bias)     # 팻말 분기 조향 offset(그 외 0.0).
+        out.steer_bias = float(cmd.steer_bias)     # 07-15 밤 팻말 재설계로 상시 0.0(고정조향 폐기 → 앵커 차선). 계약 유지용.
         self.pub_cmd.publish(out)
 
         mode = LaneMode()
         mode.header.stamp = stamp
         mode.follow_color = int(cmd.follow_color)
         mode.roi_mode = int(cmd.roi_mode)
-        mode.turn_bias = int(cmd.turn_hint)
+        mode.turn_bias = int(cmd.turn_hint)        # 팻말 분기: 인지에 앵커 차선 지시(LEFT/RIGHT). 그 외 NONE.
         mode.yolo_enable = bool(cmd.yolo_enable)   # 신호등 YOLO 게이트(출발/빨간불 종료).
-        mode.sign_enable = bool(cmd.sign_enable)   # 팻말 YOLO 게이트(SIGN_BRANCH만).
+        mode.sign_enable = bool(cmd.sign_enable)   # 팻말 YOLO 게이트(팻말 전 LANE_FOLLOW + SIGN_BRANCH).
         self.pub_mode.publish(mode)
 
         self._tick += 1
