@@ -22,6 +22,33 @@ mission_cues_node:
     #   이 값을 올리면 그쪽도 같이 올려야 오검출 방어가 유지된다.
     aruco_hold_sec: 1.0             # 마커 잠깐 놓쳐도 이 시간 present 유지(흔들림→튐 방지)
 
+    # --- 검출기 파라미터(cv2.aruco.DetectorParameters) — 07-15c ---
+    # 아래는 전부 **OpenCV 스톡값 = 건드리기 전과 동일 동작**이다. 튜닝 가능하도록
+    # 노출만 해둔 것이지 지금 켜진 튜닝은 없다.
+    #
+    # ⚠ "비스듬/가장자리 recall 프리셋"을 만들어 봤다가 **되돌렸다**(07-15). 합성 A/B에서
+    #   이득이 0이었기 때문이다(스톡 20/36 → 프리셋 20/36). 개별 파라미터도 전부 0~+1로
+    #   노이즈 수준. 유일하게 반응한 건 win_step 10→4 였는데 CPU가 3.9→6.4ms/frame(+64%).
+    #   ※ 단 그 A/B는 **합성 마커**라 실제 실패 모드를 못 담았을 수 있다. 이 값들을
+    #     건드리려면 반드시 **실촬 영상으로 A/B**할 것 — 이론으로 정하지 말 것.
+    #
+    # 튜닝 전에 로그부터: `raw_det=`(ID/크기 필터 **전** 검출 수)가
+    #   0        → 검출기가 마커를 아예 못 봄       = 이 아래 값들 문제
+    #   >0인데 present=False → 필터가 버림          = target_ids/min_perimeter_px 문제
+    # 대응이 다르니 먼저 구분할 것.
+    aruco_error_correction_rate: 0.6       # 스톡 0.6. 비트오류 정정 허용. ↑=비스듬 recall↑ / 오검↑
+    aruco_persp_ignored_margin: 0.13       # 스톡 0.13. 셀 샘플링 가장자리 여백. 기울면 ↑(0.20)
+    aruco_persp_pixel_per_cell: 4          # 스톡 4. 셀당 샘플수. ↑=비트판독 안정(CPU↑)
+    aruco_polygonal_approx_rate: 0.03      # 스톡 0.03. 사각형 근사 허용오차. 렌즈왜곡(가장자리)엔 ↑(0.05)
+    aruco_min_corner_dist_rate: 0.05       # 스톡 0.05. 코너 최소거리비. 극단각도엔 ↓(0.02)
+    aruco_min_marker_perimeter_rate: 0.03  # 스톡 0.03. 최소 둘레비. 멀면 ↓(0.01)
+    # win_step ↓ = 시도 창 수↑ = recall↑ 이지만 CPU가 가장 비싸다(10→4: +64%).
+    # mission_cues_node는 core2,3에서 YOLO와 같이 돌고, 하필 아루코가 보이는 순간
+    # _yolo_relatch가 YOLO를 켠다(mission.py) = 가장 바쁜 순간이다. 신중히.
+    aruco_adaptive_thresh_win_min: 3       # 스톡 3
+    aruco_adaptive_thresh_win_max: 23      # 스톡 23
+    aruco_adaptive_thresh_win_step: 10     # 스톡 10 (3~23 step10 = 창 3개)
+
     # --- YOLO 통합 미션신호(신호등 초록/빨강 + 방향팻말 좌/우). 클래스: 0 green/1 left/2 red/3 right ---
     # [07-14] 계획 개편: 신호등·팻말을 한 모델(best.pt)로 통합 → 프레임당 1회 추론.
     #   green/red → traffic_light, left/right → sign_direction 으로 라우팅(노드).

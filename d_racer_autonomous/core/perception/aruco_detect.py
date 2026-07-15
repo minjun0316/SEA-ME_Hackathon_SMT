@@ -31,6 +31,20 @@ class ArucoConfig:
     min_perimeter_px: float = 0.0     ##< 이 둘레(px) 미만 마커 무시(먼 오검 컷). 0=끔.
     target_ids: Tuple[int, ...] = ()  ##< 이 ID만 present로 인정. 비면 아무 마커나 인정.
 
+    # --- 검출기 파라미터(cv2.aruco.DetectorParameters 미러) — 07-15 ---
+    # 기본값 = OpenCV 스톡값(= 건드리기 전과 동일 동작). 실차 튜닝은 mission_cues.yaml에서.
+    # 심판이 마커를 **비스듬히/화면 가장자리에서** 보여줘도 잡아야 한다는 요구(07-15)에
+    # 맞춰 노출한 것들이다. 스톡값은 '정면·중앙' 기준이라 그 조건에서 recall이 떨어진다.
+    adaptive_thresh_win_size_min: int = 3        ##< 적응임계 윈도 최소[px].
+    adaptive_thresh_win_size_max: int = 23       ##< 적응임계 윈도 최대[px].
+    adaptive_thresh_win_size_step: int = 10      ##< 윈도 증가 폭. ↓면 시도 창 수↑(recall↑, CPU↑). 3~23 step10=창 3개, step4=창 6개.
+    polygonal_approx_accuracy_rate: float = 0.03 ##< 사각형 근사 허용오차. 기울거나 렌즈왜곡(화면 가장자리)이면 변이 휘어 근사 실패 → ↑(0.05~0.08).
+    error_correction_rate: float = 0.6           ##< 비트오류 정정 허용 비율. 비스듬=비트오류 → ↑(0.8~1.0). target_ids로 거르므로 오검 위험은 제한적.
+    perspective_remove_ignored_margin_per_cell: float = 0.13  ##< 셀 샘플링 시 가장자리 무시 여백. 기울면 셀 경계가 번져 옆 셀을 샘플링 → ↑(0.2~0.25).
+    perspective_remove_pixel_per_cell: int = 4   ##< 셀당 샘플 픽셀. ↑면 비트판독 안정(CPU↑).
+    min_corner_distance_rate: float = 0.05       ##< 코너 간 최소거리 비율. 극단 각도면 마커가 납작해져 코너가 붙음 → ↓(0.02).
+    min_marker_perimeter_rate: float = 0.03      ##< 최소 마커 둘레 비율(이미지 최대변 대비). 멀거나 극단 각도면 둘레가 작아짐 → ↓(0.01).
+
 
 @dataclass
 class ArucoResult:
@@ -39,6 +53,13 @@ class ArucoResult:
     ids: List[int] = field(default_factory=list)  ##< 검출·필터 통과한 마커 ID들.
     num_markers: int = 0                ##< 필터 통과 마커 개수.
     debug_image: Optional[np.ndarray] = None  ##< 오버레이(want_debug=True일 때).
+    # --- 실측치(튜닝 근거) — 07-15 ---
+    # 로그로 뽑아 "어느 거리/위치에서 깨지는가"를 재는 용도. 빨강 게이트를 r=/red_h= 실측으로
+    # 잡았던 것과 같은 방식 — 이게 없으면 임계 튜닝이 전부 추측이 된다.
+    max_perimeter_px: float = 0.0       ##< 통과 마커 중 최대 둘레[px]. 거리 지표(가까울수록 큼).
+    cx_frac: float = -1.0               ##< 최대 마커 중심의 화면 가로 위치(0=좌끝, 0.5=중앙, 1=우끝). -1=검출 없음.
+    cy_frac: float = -1.0               ##< 같은 마커의 세로 위치(0=위, 1=아래). -1=검출 없음.
+    num_raw: int = 0                    ##< ID/크기 필터 **전** 검출 수. num_markers와 벌어지면 필터가 버리는 중.
 
 
 # cv2.aruco.DICT_* 이름 → 상수. 존재하는 것만 매핑(버전차 안전).
@@ -66,9 +87,34 @@ class ArucoDetector:
         if hasattr(ar, "ArucoDetector"):
             params = ar.DetectorParameters() if hasattr(ar, "DetectorParameters") \
                 else ar.DetectorParameters_create()
+            self._apply_params(params)
             self._detector = ar.ArucoDetector(self._dict, params)
         else:
             self._params = ar.DetectorParameters_create()
+            self._apply_params(self._params)
+
+    def _apply_params(self, params) -> None:
+        """@brief ArucoConfig의 검출기 파라미터를 cv2 DetectorParameters에 반영.
+
+        @details 이름이 없는 OpenCV 버전에서도 죽지 않도록 hasattr로 방어한다(있는 것만
+        설정). 기본값이 OpenCV 스톡값이라, yaml에서 안 건드리면 동작은 종전과 같다.
+        """
+        c = self.cfg
+        mapping = {
+            "adaptiveThreshWinSizeMin": c.adaptive_thresh_win_size_min,
+            "adaptiveThreshWinSizeMax": c.adaptive_thresh_win_size_max,
+            "adaptiveThreshWinSizeStep": c.adaptive_thresh_win_size_step,
+            "polygonalApproxAccuracyRate": c.polygonal_approx_accuracy_rate,
+            "errorCorrectionRate": c.error_correction_rate,
+            "perspectiveRemoveIgnoredMarginPerCell":
+                c.perspective_remove_ignored_margin_per_cell,
+            "perspectiveRemovePixelPerCell": c.perspective_remove_pixel_per_cell,
+            "minCornerDistanceRate": c.min_corner_distance_rate,
+            "minMarkerPerimeterRate": c.min_marker_perimeter_rate,
+        }
+        for name, value in mapping.items():
+            if hasattr(params, name):
+                setattr(params, name, value)
 
     def _detect_markers(self, gray: np.ndarray):
         """@brief 버전차 흡수: (corners, ids) 반환."""
@@ -91,6 +137,7 @@ class ArucoDetector:
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
         corners, ids = self._detect_markers(gray)
+        num_raw = 0 if ids is None else len(ids)   # 필터 전 원검출 수(로그용).
 
         kept_ids: List[int] = []
         kept_corners = []
@@ -108,6 +155,24 @@ class ArucoDetector:
 
         present = len(kept_ids) > 0
 
+        # --- 실측치(튜닝 근거): 가장 큰 = 가장 가까운 마커 기준 ---
+        # 좌표는 ROI 기준이라 세로는 y0을 더해 전체 프레임으로 환산한다(가로는 ROI가
+        # 가로를 안 자르므로 그대로). 화면비로 내보내 해상도가 바뀌어도 임계가 유지된다.
+        max_peri = 0.0
+        cx_frac = -1.0
+        cy_frac = -1.0
+        best_pts = None
+        for c in kept_corners:
+            pts = c.reshape(-1, 2).astype(np.float32)
+            peri = float(cv2.arcLength(pts, True))
+            if peri > max_peri:
+                max_peri = peri
+                best_pts = pts
+        if best_pts is not None:
+            width = float(frame_bgr.shape[1])
+            cx_frac = float(best_pts[:, 0].mean()) / max(width, 1.0)
+            cy_frac = (float(best_pts[:, 1].mean()) + float(y0)) / max(float(h), 1.0)
+
         debug = None
         if want_debug:
             debug = frame_bgr.copy()
@@ -121,6 +186,11 @@ class ArucoDetector:
             label = f"ARUCO {'PRESENT' if present else '-'} ids={kept_ids}"
             cv2.putText(debug, label, (8, 22), cv2.FONT_HERSHEY_SIMPLEX,
                         0.6, (0, 255, 0) if present else (0, 0, 255), 2)
+            # 실측치도 화면에 — 모니터만 보고도 거리/위치 감을 잡게.
+            cv2.putText(debug, f"peri={max_peri:.0f}px cx={cx_frac:.2f} raw={num_raw}",
+                        (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
 
         return ArucoResult(present=present, ids=kept_ids,
-                           num_markers=len(kept_ids), debug_image=debug)
+                           num_markers=len(kept_ids), debug_image=debug,
+                           max_perimeter_px=max_peri, cx_frac=cx_frac,
+                           cy_frac=cy_frac, num_raw=num_raw)

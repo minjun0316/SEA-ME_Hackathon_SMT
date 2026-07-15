@@ -96,6 +96,17 @@ class MissionCuesNode(Node):
         self.declare_parameter('aruco_target_ids', [3])
         # present 홀드[s]: 마커 잠깐 놓쳐도 이 시간 안엔 유지(흔들림→튐 방지, 재출발 지연).
         self.declare_parameter('aruco_hold_sec', 0.4)
+        # --- 검출기 파라미터(비스듬/가장자리 recall) — 07-15. 기본=OpenCV 스톡값 ---
+        self.declare_parameter('aruco_adaptive_thresh_win_min', d.adaptive_thresh_win_size_min)
+        self.declare_parameter('aruco_adaptive_thresh_win_max', d.adaptive_thresh_win_size_max)
+        self.declare_parameter('aruco_adaptive_thresh_win_step', d.adaptive_thresh_win_size_step)
+        self.declare_parameter('aruco_polygonal_approx_rate', d.polygonal_approx_accuracy_rate)
+        self.declare_parameter('aruco_error_correction_rate', d.error_correction_rate)
+        self.declare_parameter('aruco_persp_ignored_margin',
+                               d.perspective_remove_ignored_margin_per_cell)
+        self.declare_parameter('aruco_persp_pixel_per_cell', d.perspective_remove_pixel_per_cell)
+        self.declare_parameter('aruco_min_corner_dist_rate', d.min_corner_distance_rate)
+        self.declare_parameter('aruco_min_marker_perimeter_rate', d.min_marker_perimeter_rate)
 
         target_ids = list(self.get_parameter('aruco_target_ids').value)
         # 음수/빈 리스트 = 아무 마커나 인정.
@@ -105,6 +116,24 @@ class MissionCuesNode(Node):
             roi_bottom_frac=float(self.get_parameter('aruco_roi_bottom_frac').value),
             min_perimeter_px=float(self.get_parameter('aruco_min_perimeter_px').value),
             target_ids=() if use_any else tuple(int(t) for t in target_ids),
+            adaptive_thresh_win_size_min=int(
+                self.get_parameter('aruco_adaptive_thresh_win_min').value),
+            adaptive_thresh_win_size_max=int(
+                self.get_parameter('aruco_adaptive_thresh_win_max').value),
+            adaptive_thresh_win_size_step=int(
+                self.get_parameter('aruco_adaptive_thresh_win_step').value),
+            polygonal_approx_accuracy_rate=float(
+                self.get_parameter('aruco_polygonal_approx_rate').value),
+            error_correction_rate=float(
+                self.get_parameter('aruco_error_correction_rate').value),
+            perspective_remove_ignored_margin_per_cell=float(
+                self.get_parameter('aruco_persp_ignored_margin').value),
+            perspective_remove_pixel_per_cell=int(
+                self.get_parameter('aruco_persp_pixel_per_cell').value),
+            min_corner_distance_rate=float(
+                self.get_parameter('aruco_min_corner_dist_rate').value),
+            min_marker_perimeter_rate=float(
+                self.get_parameter('aruco_min_marker_perimeter_rate').value),
         )
         try:
             self.detector = ArucoDetector(cfg)
@@ -453,9 +482,16 @@ class MissionCuesNode(Node):
             self._publish_jpeg(self.pub_debug, res.debug_image, msg.header.stamp)
 
         self._frames += 1
-        if res.present or self._frames % 30 == 0:
+        if res.present or res.num_raw > 0 or self._frames % 30 == 0:
+            # 튜닝 실측치. peri=둘레[px](거리 지표, 클수록 가까움), cx/cy=화면 위치비
+            # (0~1, 가장자리 판별). raw_det=ID/크기 필터 **전** 검출 수 — 이게 0이면
+            # 검출기가 마커를 아예 못 본 것(→ 검출 파라미터 문제), >0인데 present=False면
+            # 필터가 버린 것(→ target_ids/min_perimeter_px 문제). 둘은 대응이 다르다.
+            # raw=True인데 held만 True로 이어지는 구간이 보이면 aruco_hold_sec가 일하는 중.
             self.get_logger().info(
-                f'aruco raw={res.present} ids={res.ids} → present(held)={self._held_present}',
+                f'aruco raw={res.present} ids={res.ids} → present(held)={self._held_present} '
+                f'| raw_det={res.num_raw} peri={res.max_perimeter_px:.0f}px '
+                f'cx={res.cx_frac:.2f} cy={res.cy_frac:.2f}',
                 throttle_duration_sec=0.5)
 
     def _on_lane_mode(self, msg: LaneMode):
