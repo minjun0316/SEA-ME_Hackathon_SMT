@@ -7,6 +7,9 @@ bool    go                # false면 제어가 throttle=0(정지). 조향은 유
 float32 speed_scale       # v_max에 곱하는 배율 [0.0~1.0]. 코너/불확실 시 감속.
 float32 lookahead_scale   # lookahead 배율 [기본 1.0]. (선택; 미사용 시 1.0)
 float32 steer_limit       # 정규화 조향 상한 [0.0~1.0]. (선택; 미사용 시 1.0)
+# [2026-07-14] 방향 팻말 구간(SIGN_BRANCH) 조향 bias. 제어가 정규화 조향에 가산한다.
+# 흰선 추종은 그대로 두고 좌/우로 살짝 치우치게만 한다. 그 외 구간=0.0.
+float32 steer_bias        # 정규화 조향 offset(기본 0.0). 부호=제어 조향 규약(좌/우). (선택; 미사용 시 0.0)
 
 # state 상수 (core.planning.DriveState 값과 일치)
 uint8 STATE_INIT=0        # 초기화/대기

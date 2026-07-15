@@ -30,6 +30,7 @@ from .mission import (
     MissionObservation,
     MissionPhase,
     MissionSequencer,
+    SignDirection,
     TrafficLight,
 )
 
@@ -46,5 +47,6 @@ __all__ = [
     "MissionObservation",
     "MissionPhase",
     "MissionSequencer",
+    "SignDirection",
     "TrafficLight",
 ]

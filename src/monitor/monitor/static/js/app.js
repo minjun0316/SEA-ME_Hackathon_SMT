@@ -662,7 +662,6 @@ function refreshDebugFrames() {
 
   const requests = [
     [elements.debugFrameSlidingWindow, config.debugFrameSlidingWindowEndpoint],
-    [elements.debugFrameBev, config.debugFrameBevEndpoint],
     [elements.debugFrameLaneEdge, config.debugFrameLaneEdgeEndpoint],
     [elements.debugFrameYolo, config.debugFrameYoloEndpoint],
   ];

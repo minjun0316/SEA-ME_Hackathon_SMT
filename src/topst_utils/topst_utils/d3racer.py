@@ -18,6 +18,12 @@ class EscCalib:
     rev_us: int = 1000          # -1.0
     min_us: int = 1000
     max_us: int = 2000
+    # 데드밴드 보상: ESC는 중립 위/아래로 일정 폭까지 모터가 안 돈다(죽은 구간).
+    # 선형 매핑(중립부터 시작)은 이 구간에 스로틀 하위 영역을 통째로 버려 저속이
+    # 안 나간다. 시작 펄스를 '모터가 실제로 도는 최소 펄스'로 잡아 그 지점부터
+    # 매핑하면 작은 throttle에도 바로 구동된다. 기본=중립(=보상 off, 기존 선형 동작).
+    fwd_start_us: int = 1500    # 전진 시작 펄스[µs]. 실측(바퀴가 처음 도는 값)으로 튜닝.
+    rev_start_us: int = 1500    # 후진 시작 펄스[µs].
 
 
 class D3Racer:
@@ -62,10 +68,14 @@ class D3Racer:
         p = float(p)
         p = self.clip(p, -1.0, 1.0)
 
+        # 데드밴드 보상: p>0은 fwd_start_us부터, p<0은 rev_start_us부터 매핑한다.
+        # start_us=neutral_us면 기존 선형 매핑(중립부터)과 동일.
+        #   p→0+ : fwd_start_us,   p=+1 : fwd_us
+        #   p→0- : rev_start_us,   p=-1 : rev_us
         if p > 0:
-            pulse = self.esc.neutral_us + p * (self.esc.fwd_us - self.esc.neutral_us)
+            pulse = self.esc.fwd_start_us + p * (self.esc.fwd_us - self.esc.fwd_start_us)
         elif p < 0:
-            pulse = self.esc.neutral_us + p * (self.esc.neutral_us - self.esc.rev_us)
+            pulse = self.esc.rev_start_us + p * (self.esc.rev_start_us - self.esc.rev_us)
         else:
             pulse = self.esc.neutral_us
 

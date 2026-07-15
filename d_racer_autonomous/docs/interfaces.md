@@ -120,6 +120,7 @@ bool    go                # false면 제어가 throttle=0(정지). 조향은 유
 float32 speed_scale       # v_max에 곱하는 배율 [0.0~1.0]. 코너/불확실 시 감속.
 float32 lookahead_scale   # lookahead 배율 [기본 1.0]. (선택; 미사용 시 1.0)
 float32 steer_limit       # 정규화 조향 상한 [0.0~1.0]. (선택; 미사용 시 1.0)
+float32 steer_bias        # 팻말 구간 조향 offset(기본 0.0). 제어가 정규화 조향에 가산. [iface 2026-07-14]
 
 # state 상수
 uint8 STATE_INIT=0        # 초기화/대기
@@ -135,11 +136,15 @@ uint8 STATE_LOST=4        # 차선 소실 → 정지 또는 마지막 조향 유
 ```
 std_msgs/Header header
 uint8   traffic_light         # TL_NONE=0/TL_RED=1/TL_GREEN=2 (YOLO)
-bool    checkerboard_detected # 체커보드 출발/도착선 (YOLO)
-bool    red_zone_detected     # 빨강 바닥 장애물 구역 (OpenCV 색)
+bool    checkerboard_detected # 체커보드 (YOLO). [2026-07-14] 도착 판정 폐기(빨간불 종료로 교체), 필드만 유지
+bool    red_zone_detected     # 빨강 바닥 구역 (OpenCV). 폐기 stub(미소비), 필드만 유지
 bool    aruco_present         # 아루코 마커, 하단 ROI (cv2.aruco)
+bool    sign_detected         # 방향 팻말색 검출 (OpenCV 트리거). 팻말 구간 진입.  [iface 2026-07-14]
+uint8   sign_direction        # SIGN_NONE=0/SIGN_LEFT=1/SIGN_RIGHT=2 (팻말 YOLO, 별도 모델)  [iface 2026-07-14]
 ```
 > 미션 페이즈 전환용 객체/구역 신호 묶음. 차선 기하(lane_path/lane_status)와 분리.
+> **[2026-07-14]** 종료=빨간불(체커보드 폐기). `sign_detected`(OpenCV색=팻말 구간 트리거)+
+> `sign_direction`(팻말 YOLO=좌/우) 추가 → 판단이 SIGN_BRANCH 진입·조향 bias 방향에 소비.
 
 ### 4.6 `/decision/lane_mode` → **`racer_msgs/LaneMode`** (신규, [iface 2026-07-06]) ★역방향
 ```
@@ -147,18 +152,22 @@ std_msgs/Header header
 uint8 follow_color  # COLOR_WHITE=0/COLOR_YELLOW=1
 uint8 roi_mode      # ROI_FULL=0/LOWER=1/RIGHT=2/LEFT=3/LOWER_ARUCO=4
 uint8 turn_bias     # BIAS_NONE=0/LEFT=1/RIGHT=2
-bool  yolo_enable   # YOLO 추론 게이트: true=ON, false=skip  [iface 2026-07-13]
+bool  yolo_enable   # 신호등 YOLO 추론 게이트: true=ON, false=skip  [iface 2026-07-13]
+bool  sign_enable   # 팻말 YOLO(별도 모델) 게이트: true=ON, false=skip. yolo_enable과 독립  [iface 2026-07-14]
 ```
 > **판단→인지** 지시. 미션 SM(5-state)이 상태에 따라 "어느 색/ROI로 볼지"를 준다.
 > 인지는 이 지시대로 ROI 자르기·mask·target을 적용해 lane_path를 만든다.
 > 상수값은 `core.planning`의 LaneColor/RoiMode/TurnHint와 일치. 상세: `perception_agreement.md`.
 > **[2026-07-13]** 로터리 ROI 방식 폐기 → 판단은 RIGHT/LEFT·YELLOW·turn_bias를 발행하지 않는다
 > (항상 follow_color=WHITE, roi_mode∈{FULL,LOWER,LOWER_ARUCO}, turn_bias=NONE). 값은 계약에 유지.
-> **[iface 2026-07-13] `yolo_enable` 추가** — 무거운 YOLO 추론의 페이즈별 on/off 게이트.
-> 미션 SM이 산출: `WAIT_START_SIGNAL`=ON(출발 신호등) → `LANE_FOLLOW`/`SHORTCUT`=OFF(FPS 확보) →
-> `DYNAMIC_OBSTACLE_ZONE`에서 aruco_present 최초 검출 시 ON 래치(도착 체커보드까지 유지).
-> `mission_cues_node`가 구독해 YOLO 추론 호출을 게이트한다(aruco·신호등 hold 등 나머지는 계속).
-> 발행자 없으면 인지는 기본 ON(하위호환). 전체 off(항상 ON)는 `mission.yaml`의 `yolo_gate_enable: false`.
+> **[iface 2026-07-13] `yolo_enable`** — 신호등 YOLO 추론의 페이즈별 게이트.
+> **[iface 2026-07-14] `sign_enable` 추가 + 새 6-state FSM 반영** — 팻말 YOLO(별도 모델)를 독립 게이트.
+> 미션 SM이 산출(모델 2개 독립 on/off):
+> - `yolo_enable`(신호등): `WAIT_START_SIGNAL`=ON(출발 초록불) → 주행중 OFF → aruco 최초 검출 시 ON 래치
+>   유지(`FINISH_WATCH`에서 **빨간불** 종료 감시까지). 지름길 SHORTCUT 폐기.
+> - `sign_enable`(팻말): `SIGN_BRANCH`에서만 ON(팻말 좌/우 판단). 그 외 OFF.
+> `mission_cues_node`가 둘 다 구독해 각 모델 추론 호출을 게이트한다(aruco·팻말색 OpenCV 등은 계속).
+> 발행자 없으면 신호등=기본 ON(하위호환), 팻말=기본 OFF. 전체 off는 `mission.yaml`의 `yolo_gate_enable: false`.
 
 ---
 

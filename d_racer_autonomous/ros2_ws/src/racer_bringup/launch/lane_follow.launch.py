@@ -32,7 +32,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.descriptions import ParameterValue
 
@@ -49,7 +49,20 @@ def generate_launch_description():
         DeclareLaunchArgument('use_control', default_value='True',
                               description='키트 control_node(서보/모터 액추에이터) 도 함께 띄울지'),
         DeclareLaunchArgument('use_decision', default_value='False',
-                              description='반응형 판단 게이트(정지선/아루코 정지). 라인트래킹엔 불필요, 기본 off. use_mission과 동시 사용 금지(둘 다 drive_command 발행).'),
+                              description='반응형 판단 게이트(정지선/아루코 정지) + 신호등 출발 + 팻말→차선 지시. use_mission과 동시 사용 금지(둘 다 drive_command 발행).'),
+        DeclareLaunchArgument('traffic_light_start', default_value='True',
+                              description='신호등 출발 게이트(use_decision=True일 때). True=초록불 볼 때까지 정지 대기(1회 래치 후 계속 주행). '
+                                          'YOLO가 초록 못 잡아 출발 안 하면 False로 끄고 주행.'),
+        DeclareLaunchArgument('traffic_light_finish', default_value='True',
+                              description='빨간불 종료(use_decision=True일 때). True=출발 후 finish_grace_sec 지나고 '
+                                          '빨간불 보면 영구 정지(코스 종료). 테스트 중 조기종료가 귀찮으면 False.'),
+        DeclareLaunchArgument('finish_grace_sec', default_value='15.0',
+                              description='출발 후 이 시간[s] 동안 빨간불 무시. '
+                                          '[07-15b] 0.0→15.0: 종료 신호등은 코스 마지막이고 최속 주파가 '
+                                          '~40s라, 15s 유예는 진짜 빨강을 놓칠 위험 없이 출발 구간 '
+                                          '오검출만 잘라낸다. 코스가 빨라지면 ↓.'),
+        DeclareLaunchArgument('sign_lane', default_value='True',
+                              description='방향 팻말→차선 선택(use_decision=True일 때). True=팻말 좌/우 보면 그 쪽 차선 강제 anchor(sign_hold_sec 유지).'),
         DeclareLaunchArgument('use_mission', default_value='False',
                               description='전체 미션 시퀀서(mission_node) 띄우기. 출발 신호등 대기→차선주행→지름길→장애물정지→도착정지 전체 미션 + YOLO 페이즈 게이트(/decision/lane_mode.yolo_enable). use_decision과 배타.'),
         DeclareLaunchArgument('use_battery', default_value='True',
@@ -111,7 +124,23 @@ def generate_launch_description():
                               description='lateral_pd κ 데드밴드 오버라이드(직선 격리)'),
         DeclareLaunchArgument('pd_curvature_preview', default_value='',
                               description='lateral_pd κ preview 거리[m] 오버라이드'),
+        # CPU 코어 핀닝(taskset prefix). 4코어 Cortex-A72를 기능별로 고정해 YOLO가
+        # 주행 파이프라인을 preempt/마이그레이션시키지 못하게 한다(07-14 실측 확정 맵):
+        #   core0=camera+lane_detect / core1=controller+control+battery+monitor(+판단)
+        #   core2,3=YOLO(mission_cues, yolo_detect_test). prefix로 exec前 마스크→전 스레드 상속.
+        DeclareLaunchArgument('cpu_pinning', default_value='True',
+                              description='CPU 코어 핀닝 on/off. False면 스케줄러 자유배치(기존 동작).'),
     ]
+
+    # --- CPU 코어 핀닝 prefix 생성(cpu_pinning=True일 때만 taskset을 앞에 붙임) ---
+    def _pin(cores):
+        # cpu_pinning이 true류면 'taskset -c <cores> ', 아니면 '' → prefix 무효(핀닝 off).
+        return PythonExpression(
+            ["'taskset -c ", cores, " ' if '",
+             LaunchConfiguration('cpu_pinning'), "'.lower() in ('true','1','on') else ''"])
+    pin_core0 = _pin('0')      # camera, lane_detect
+    pin_core1 = _pin('1')      # controller, control, battery, monitor, 판단
+    pin_yolo = _pin('2,3')     # mission_cues(YOLO), yolo_detect_test
 
     # 1) 카메라(키트) — 옵션
     camera = Node(
@@ -119,6 +148,7 @@ def generate_launch_description():
         executable='camera_node',
         name='camera_node',
         output='screen',
+        prefix=pin_core0,
         condition=IfCondition(LaunchConfiguration('use_camera')),
     )
 
@@ -128,6 +158,7 @@ def generate_launch_description():
         executable='lane_detect_node',
         name='lane_detect_node',
         output='screen',
+        prefix=pin_core0,
         # lane.yaml 먼저 로드 → 뒤의 publish_debug 오버라이드가 이김(런치 인자로 토글).
         parameters=[
             LaunchConfiguration('lane_config'),
@@ -142,6 +173,7 @@ def generate_launch_description():
         executable='mission_cues_node',
         name='mission_cues_node',
         output='screen',
+        prefix=pin_yolo,
         parameters=[LaunchConfiguration('mission_cues_config')],
         condition=IfCondition(LaunchConfiguration('use_mission_cues')),
     )
@@ -153,9 +185,19 @@ def generate_launch_description():
         executable='decision_node',
         name='decision_node',
         output='screen',
+        prefix=pin_core1,
         parameters=[{
             'mission_cues_topic': '/perception/mission_cues',
             'aruco_stop_enable': True,
+            # 신호등 출발 게이트 / 팻말→차선 지시 (둘 다 mission_cues의 YOLO 신호를 소비).
+            'traffic_light_start_enable': ParameterValue(
+                LaunchConfiguration('traffic_light_start'), value_type=bool),
+            'traffic_light_finish_enable': ParameterValue(
+                LaunchConfiguration('traffic_light_finish'), value_type=bool),
+            'finish_grace_sec': ParameterValue(
+                LaunchConfiguration('finish_grace_sec'), value_type=float),
+            'sign_lane_enable': ParameterValue(
+                LaunchConfiguration('sign_lane'), value_type=bool),
         }],
         condition=IfCondition(LaunchConfiguration('use_decision')),
     )
@@ -169,6 +211,7 @@ def generate_launch_description():
         executable='mission_node',
         name='mission_node',
         output='screen',
+        prefix=pin_core1,
         parameters=[{
             'rate_hz': LaunchConfiguration('rate_hz'),
             'lane_timeout': LaunchConfiguration('lane_timeout'),
@@ -182,6 +225,7 @@ def generate_launch_description():
         executable='controller_node',
         name='controller_node',
         output='screen',
+        prefix=pin_core1,
         parameters=[{
             'source': 'topic',
             'lateral_controller': LaunchConfiguration('lateral_controller'),
@@ -218,6 +262,7 @@ def generate_launch_description():
         executable='control_node',
         name='control_node',
         output='screen',
+        prefix=pin_core1,
         parameters=[{'use_joystick_control': False}],
         condition=IfCondition(LaunchConfiguration('use_control')),
     )
@@ -228,6 +273,7 @@ def generate_launch_description():
         executable='battery_node',
         name='battery_node',
         output='screen',
+        prefix=pin_core1,
         condition=IfCondition(LaunchConfiguration('use_battery')),
     )
 
@@ -237,6 +283,7 @@ def generate_launch_description():
         executable='monitor_node',
         name='monitor_node',
         output='screen',
+        prefix=pin_core1,
         condition=IfCondition(LaunchConfiguration('use_monitor')),
     )
 
@@ -248,6 +295,7 @@ def generate_launch_description():
         executable='yolo_detect_test_node',
         name='yolo_detect_test_node',
         output='screen',
+        prefix=pin_yolo,
         parameters=[yolo_cfg],
         condition=IfCondition(LaunchConfiguration('use_yolo')),
     )

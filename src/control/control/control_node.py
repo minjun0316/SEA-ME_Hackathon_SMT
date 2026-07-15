@@ -7,7 +7,7 @@ import yaml
 
 from control_msgs.msg import Control
 from joystick_msgs.msg import Joystick
-from topst_utils.d3racer import D3Racer
+from topst_utils.d3racer import D3Racer, EscCalib
 
 
 def get_default_vehicle_config_path():
@@ -52,12 +52,14 @@ class ControlNode(Node):
         self.command_hz = command_hz
         self.cmd_timeout = float(self.get_parameter('cmd_timeout').value)
         self.steer_trim = self.load_steer_trim()
+        self.esc_calib = self.load_esc_calib()
 
         self.d3_racer = D3Racer(
             i2c_bus=i2c_bus,
             pca9685_addr=pca9685_addr,
             steering_channel=steering_channel,
             throttle_channel=throttle_channel,
+            esc=self.esc_calib,
         )
 
         self.get_logger().info(
@@ -67,6 +69,8 @@ class ControlNode(Node):
             f'  steering_channel={steering_channel}\n'
             f'  throttle_channel={throttle_channel}\n'
             f'  steer_trim={self.steer_trim}\n'
+            f'  esc_fwd_start_us={self.esc_calib.fwd_start_us} '
+            f'rev_start_us={self.esc_calib.rev_start_us} (데드밴드 보상)\n'
             f'  use_joystick_control={self.use_joystick_control}\n'
             f'  joystick_topic={joystick_topic}\n'
             f'  control_topic={control_topic}\n'
@@ -177,6 +181,29 @@ class ControlNode(Node):
             return 0.0
 
         return float(config_data.get('STEER_TRIM', 0.0))
+
+    def load_esc_calib(self):
+        """@brief vehicle_config.yaml에서 ESC 스로틀 캘리브(데드밴드 보상)를 읽는다.
+
+        키가 없으면 EscCalib 기본값(=중립부터 선형, 보상 off)을 유지한다. 저속이
+        데드밴드에 걸려 안 나갈 때 THROTTLE_FWD_START_US 를 모터 실측 시작 펄스로
+        올려 저속 구동을 살린다.
+        """
+        calib = EscCalib()
+        if not os.path.exists(self.vehicle_config_file):
+            return calib
+        try:
+            with open(self.vehicle_config_file, 'r', encoding='utf-8') as config_stream:
+                config_data = yaml.safe_load(config_stream) or {}
+        except Exception as exc:
+            self.get_logger().warning(
+                f'Failed to read vehicle config file {self.vehicle_config_file}: {exc}'
+            )
+            return calib
+
+        calib.fwd_start_us = int(config_data.get('THROTTLE_FWD_START_US', calib.fwd_start_us))
+        calib.rev_start_us = int(config_data.get('THROTTLE_REV_START_US', calib.rev_start_us))
+        return calib
 
     def destroy_node(self):
         try:

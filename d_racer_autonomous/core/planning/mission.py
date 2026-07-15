@@ -2,21 +2,29 @@
 @brief 상위 미션 시퀀스(MissionSequencer) — ROS-free 순수 로직.
 
 @details
-2계층 판단의 **위층**. 신호등 출발 대기 → 차선 주행 → 장애물 구역 → 도착 정지의
-간단한 순차 상태기계다. 각 상태에서 제어 게이트(go/speed_scale)와 인지 지시
-(follow_color/roi_mode)를 내고, 눈앞 차선에 대한 즉각 반응(DRIVE/SLOW/LOST)은
-아래층 DecisionMaker에 위임한다.
+2계층 판단의 **위층**. 흰선 폐루프 코스(07-14 재설계)를 6-state 순차 상태기계로 돈다:
 
-@par 로터리(원형 지름길) 회전은 여기서 하지 않는다
-로터리 진입/탈출 회전은 이 FSM이 아니라 **제어단의 개루프 고정조향 기동**
-(core.planning.stopline_maneuver.StoplineManeuver, controller_node)이 정지선
-카운트로 처리한다. 따라서 이 FSM은 로터리를 별도 페이즈로 다루지 않고, 로터리
-구간에서도 일반 차선 주행(LANE_FOLLOW) 상태로 통과한다. (ROI를 좌/우로 전환해
-차선추종으로 도는 옛 방식은 폐기 — 07-13 결정.)
+  WAIT_START_SIGNAL → LANE_FOLLOW → SIGN_BRANCH → LANE_FOLLOW → OBSTACLE_ZONE
+                    → FINISH_WATCH → FINISH_STOP
+
+각 상태에서 제어 게이트(go/speed_scale/steer_bias)와 인지 지시(roi_mode/yolo_enable/
+sign_enable)를 내고, 눈앞 차선에 대한 즉각 반응(DRIVE/SLOW/LOST)은 아래층 DecisionMaker에
+위임한다. 지름길(노랑 차선추종)·로터리·체커보드 도착은 **폐기**(07-14).
+
+@par 코스 시퀀스
+1. 출발점에서 신호등 **초록불** 대기(신호등 YOLO ON) → 초록 확정 시 출발(YOLO OFF).
+2. S자 흰선 코스를 **양쪽 흰 차선** 슬라이딩윈도우로 추종(LANE_FOLLOW).
+3. S자 끝 **방향 팻말**: OpenCV 팻말색이 잡히면(sign_detected) SIGN_BRANCH 진입 →
+   팻말 YOLO(sign_enable) ON → 좌/우 판정 래치 → 흰선 추종은 유지한 채 조향에 bias만
+   얹는다 → 고정시간(sign_branch_duration) 경과 시 LANE_FOLLOW 복귀(팻말 1회성 래치).
+4. 다시 흰선 기본 추종(LANE_FOLLOW).
+5. 동적 장애물 **아루코 마커**: 보이면 정지, 사라지면 재출발(신호등 YOLO 재점화).
+6. 재출발 후 **빨간불** 감시(FINISH_WATCH) → 빨간불 보이면 정지(FINISH_STOP=종료).
 
 @par 역할 경계
-ROI 자르기·색 mask·target point 추출·아루코 검출은 모두 **인지(OpenCV/YOLO) 몫**이다.
-위층은 "어느 모드로 볼지(roi_mode/follow_color)"만 지시한다.
+ROI 자르기·색 mask·target point 추출·아루코/팻말/신호등 검출은 모두 **인지** 몫이다.
+위층은 "어느 모드로 볼지(roi_mode)"와 "YOLO 어느 모델을 켤지(yolo_enable/sign_enable)",
+"조향 bias/속도배율"만 지시한다.
 
 시퀀스 설계: docs/mission_fsm.md, 계약: docs/interfaces.md, 합의: docs/perception_agreement.md.
 """
@@ -40,20 +48,28 @@ from .decision import (
 class MissionPhase(IntEnum):
     """@brief 상위 미션 페이즈. 값=미션 순서."""
 
-    WAIT_START_SIGNAL = 0        ##< 출발점 체커보드에서 초록불 대기.
-    LANE_FOLLOW = 1              ##< 흰 차선 주행(외곽/직진).
-    SHORTCUT = 2                 ##< 지름길: 노랑 차선 추종(인지 on_yellow 래치). 로터리 회전은 StoplineManeuver 몫.
-    DYNAMIC_OBSTACLE_ZONE = 3    ##< 아루코 마커 정지 구역: 마커 보이면 정지, 치우면 도착 접근(red_zone 폐기 07-13).
-    FINISH_APPROACH = 4          ##< 체커보드 도착선 접근.
-    FINISH_STOP = 5              ##< 도착 정지(종료).
+    WAIT_START_SIGNAL = 0        ##< 출발점에서 초록불 대기(신호등 YOLO ON).
+    LANE_FOLLOW = 1              ##< 흰 차선 양쪽 추종(S자 코스 + 팻말 후 기본 주행).
+    SIGN_BRANCH = 2              ##< 방향 팻말 분기: 팻말 YOLO 좌/우 → 조향 bias(고정시간).
+    OBSTACLE_ZONE = 3            ##< 동적 장애물 아루코: 보이면 정지, 치우면 재출발.
+    FINISH_WATCH = 4             ##< 재출발 후 빨간불 감시(신호등 YOLO ON).
+    FINISH_STOP = 5              ##< 빨간불 → 정지(종료).
 
 
 class TrafficLight(IntEnum):
-    """@brief 신호등 인지 결과(YOLO)."""
+    """@brief 신호등 인지 결과(YOLO). 값=MissionCues.TL_* 와 일치."""
 
     NONE = 0
     RED = 1
     GREEN = 2
+
+
+class SignDirection(IntEnum):
+    """@brief 방향 팻말 인지 결과(팻말 YOLO). 값=MissionCues.SIGN_* 와 일치."""
+
+    NONE = 0
+    LEFT = 1
+    RIGHT = 2
 
 
 @dataclass
@@ -61,35 +77,30 @@ class MissionObservation:
     """@brief 미션 판단 입력 — 차선 관측 + 미션 신호 묶음.
 
     @details 아래층이 쓰는 LaneObservation을 품고(=lane), 위층 전환에 필요한 미션
-    신호(신호등/빨강구역/아루코/체커보드)를 더한다. 정지선은 lane.stop_line 재사용.
-    신호 출처/의미는 docs/perception_agreement.md 참조.
+    신호(신호등/아루코/팻말)를 더한다. 신호 출처/의미는 docs/perception_agreement.md 참조.
     """
 
     lane: LaneObservation = field(default_factory=LaneObservation)  ##< 차선 관측(아래층 입력).
-    traffic_light: TrafficLight = TrafficLight.NONE  ##< 신호등(YOLO): 출발.
-    on_yellow: bool = False          ##< 인지 노랑모드 래치(지름길 노랑선 추종 중): SHORTCUT 전환.
-    red_zone_detected: bool = False  ##< 빨강 바닥 구역(OpenCV). ⚠07-13 폐기: 전이에 미사용(필드는 msg 호환 유지). 정지는 aruco_present가 담당.
-    aruco_present: bool = False      ##< 아루코 마커(cv2.aruco): 정지 구역 진입/유지 트리거 + YOLO 재점화.
-    checkerboard_detected: bool = False  ##< 체커보드(YOLO): 도착선.
+    traffic_light: TrafficLight = TrafficLight.NONE  ##< 신호등(YOLO): 출발(초록)/종료(빨강).
+    aruco_present: bool = False          ##< 아루코 마커(cv2.aruco): 정지 구역 진입/유지 + YOLO 재점화.
+    sign_detected: bool = False          ##< 방향 팻말색(OpenCV): SIGN_BRANCH 진입 트리거.
+    sign_direction: SignDirection = SignDirection.NONE  ##< 방향 팻말 좌/우(팻말 YOLO): 조향 bias 방향.
 
 
 # --- 페이즈별 인지 ROI 지시 ------------------------------------------------- #
 _ROI_MAP = {
     MissionPhase.LANE_FOLLOW: RoiMode.LOWER,
-    MissionPhase.SHORTCUT: RoiMode.LOWER,
-    MissionPhase.DYNAMIC_OBSTACLE_ZONE: RoiMode.LOWER_ARUCO,
-    MissionPhase.FINISH_APPROACH: RoiMode.LOWER,
+    MissionPhase.SIGN_BRANCH: RoiMode.LOWER,
+    MissionPhase.OBSTACLE_ZONE: RoiMode.LOWER_ARUCO,
+    MissionPhase.FINISH_WATCH: RoiMode.LOWER,
 }
-# 속도 상한(감속) 적용 페이즈(지름길 커브·장애물 구간).
-_SLOW_PHASES = frozenset({MissionPhase.SHORTCUT, MissionPhase.DYNAMIC_OBSTACLE_ZONE})
 
 
 class MissionSequencer:
     """@brief 미션 상태기계(순수 로직). 아래층 DecisionMaker를 감싼다.
 
     @details 매 주기 update(obs, dt)로 페이즈를 갱신하고 DriveCommand(제어 게이트 +
-    인지 지시)를 반환한다. 로터리 회전은 제어단 StoplineManeuver가 담당하므로 여기선
-    다루지 않는다.
+    인지 지시)를 반환한다.
     """
 
     def __init__(self,
@@ -102,10 +113,12 @@ class MissionSequencer:
         self.reset()
 
     def reset(self) -> None:
-        """@brief 페이즈·타이머·아래층을 모두 초기화한다."""
+        """@brief 페이즈·타이머·래치·아래층을 모두 초기화한다."""
         self._phase = MissionPhase.WAIT_START_SIGNAL
         self._phase_time = 0.0        ##< 현재 페이즈 지속시간[s].
-        self._yolo_relatch = False    ##< 장애물구역서 아루코 최초검출 시 True(도착까지 YOLO 재점화 래치).
+        self._yolo_relatch = False    ##< 장애물구역서 아루코 최초검출 시 True(빨간불 종료까지 신호등 YOLO 재점화).
+        self._sign_done = False       ##< 팻말 분기 완료 1회성 래치(재진입 방지).
+        self._sign_dir = SignDirection.NONE  ##< SIGN_BRANCH서 래치한 좌/우(첫 non-NONE 유지).
         self.decision.reset()
 
     @property
@@ -118,28 +131,35 @@ class MissionSequencer:
         dt = max(0.0, dt)
         self._phase_time += dt
         self._advance_phase(obs)
+        self._latch_sign_direction(obs)
         cmd = self._command(obs, dt)
         cmd.yolo_enable = self._yolo_enable(obs)
+        cmd.sign_enable = self._sign_enable()
         return cmd
 
     def _yolo_enable(self, obs: MissionObservation) -> bool:
-        """@brief 인지 YOLO 추론 게이트 산출(페이즈 + 아루코 래치).
+        """@brief 신호등 YOLO 추론 게이트(페이즈 + 아루코 래치).
 
-        @details 무거운 YOLO는 신호 검출이 필요한 양 끝단에서만 켠다:
-        출발 신호등 대기(WAIT_START_SIGNAL)=ON → 주행중(LANE_FOLLOW/SHORTCUT)=OFF로
-        FPS 확보 → 아루코 마커가 처음 보이면(=정지/종료 임박, 구역 무관) ON을 래치해
-        도착 체커보드(FINISH_APPROACH/STOP)까지 유지한다. 래치는 한 번 서면 reset()
-        전까지 유지(마커 깜빡여도 안 꺼짐). yolo_gate_enable=False면 게이트를 끄고
-        항상 ON(기존 동작). @return True=YOLO 추론 ON.
+        @details 무거운 신호등 YOLO는 신호가 필요한 양 끝단에서만 켠다: 출발 신호등
+        대기(WAIT_START_SIGNAL)=ON → 주행중 OFF로 FPS 확보 → 아루코 마커가 처음 보이면
+        (=정지/종료 임박) ON을 래치해 재출발 후 빨간불 종료 감시(FINISH_WATCH)까지 유지한다.
+        래치는 한 번 서면 reset() 전까지 유지(마커 깜빡여도 안 꺼짐). yolo_gate_enable=False면
+        게이트를 끄고 항상 ON(기존 동작). @return True=신호등 YOLO 추론 ON.
         """
         if not self.cfg.yolo_gate_enable:
             return True
-        # 출발 이후 아루코가 보이면(=정지/종료 임박) YOLO 재점화 래치. red_zone stub과
-        # 무관하게 동작하도록 페이즈 조건 없이 아루코만으로 건다.
         if obs.aruco_present and self._phase != MissionPhase.WAIT_START_SIGNAL:
             self._yolo_relatch = True
         return (self._phase == MissionPhase.WAIT_START_SIGNAL
                 or self._yolo_relatch)
+
+    def _sign_enable(self) -> bool:
+        """@brief 방향 팻말 YOLO(별도 모델) 게이트 — SIGN_BRANCH에서만 ON.
+
+        @details 팻말 모델은 좌/우 판정이 필요한 팻말 분기 구간에서만 켠다(그 외 OFF로
+        CPU/FPS 확보). 신호등 게이트(yolo_enable)와 독립. @return True=팻말 YOLO ON.
+        """
+        return self._phase == MissionPhase.SIGN_BRANCH
 
     # --- 페이즈 전이 -----------------------------------------------------
 
@@ -157,29 +177,39 @@ class MissionSequencer:
                 self._set_phase(MissionPhase.LANE_FOLLOW)
 
         elif p == MissionPhase.LANE_FOLLOW:
-            # 아루코 마커 = 정지/종료 임박 트리거(red_zone 폐기, 07-13). 마커 보이면
-            # 어느 주행 페이즈든 정지구역으로. 없으면 노랑 래치로 지름길 전환.
+            # 아루코 = 정지/종료 임박 트리거(최우선). 없으면 팻말색으로 분기(1회만).
             if obs.aruco_present:
-                self._set_phase(MissionPhase.DYNAMIC_OBSTACLE_ZONE)
-            elif obs.on_yellow:
-                self._set_phase(MissionPhase.SHORTCUT)
+                self._set_phase(MissionPhase.OBSTACLE_ZONE)
+            elif not self._sign_done and obs.sign_detected:
+                self._set_phase(MissionPhase.SIGN_BRANCH)
+                self._sign_dir = SignDirection.NONE   # 새 분기 진입 시 방향 래치 초기화.
 
-        elif p == MissionPhase.SHORTCUT:
-            # 지름길 중에도 아루코 보이면 정지 우선. 아니면 노랑 해제 시 외곽 복귀.
+        elif p == MissionPhase.SIGN_BRANCH:
+            # 분기 중에도 아루코 보이면 정지 우선. 아니면 고정시간 경과 시 복귀(1회성 래치).
             if obs.aruco_present:
-                self._set_phase(MissionPhase.DYNAMIC_OBSTACLE_ZONE)
-            elif not obs.on_yellow:
+                self._sign_done = True
+                self._set_phase(MissionPhase.OBSTACLE_ZONE)
+            elif self._phase_time >= self.cfg.sign_branch_duration:
+                self._sign_done = True
                 self._set_phase(MissionPhase.LANE_FOLLOW)
 
-        elif p == MissionPhase.DYNAMIC_OBSTACLE_ZONE:
-            # 마커 치우면(재출발) 도착 접근으로. 아루코 도착 근처에만 등장 전제.
+        elif p == MissionPhase.OBSTACLE_ZONE:
+            # 마커 치우면(재출발) 빨간불 감시로. 아루코는 종료 근처에만 등장 전제.
             if not obs.aruco_present:
-                self._set_phase(MissionPhase.FINISH_APPROACH)
+                self._set_phase(MissionPhase.FINISH_WATCH)
 
-        elif p == MissionPhase.FINISH_APPROACH:
-            if obs.checkerboard_detected:
+        elif p == MissionPhase.FINISH_WATCH:
+            # 재출발 후 흰선 주행하며 빨간불 감시. 빨간불 = 종료.
+            if obs.traffic_light == TrafficLight.RED:
                 self._set_phase(MissionPhase.FINISH_STOP)
         # FINISH_STOP: 종료(전이 없음).
+
+    def _latch_sign_direction(self, obs: MissionObservation) -> None:
+        """@brief SIGN_BRANCH 중 첫 non-NONE 팻말 방향을 래치(잠깐 NONE에도 안 풀림)."""
+        if (self._phase == MissionPhase.SIGN_BRANCH
+                and self._sign_dir == SignDirection.NONE
+                and obs.sign_direction != SignDirection.NONE):
+            self._sign_dir = SignDirection(int(obs.sign_direction))
 
     # --- 명령/지시 생성 --------------------------------------------------
 
@@ -187,12 +217,12 @@ class MissionSequencer:
         """@brief 현재 페이즈에 맞는 DriveCommand(제어 게이트 + 인지 지시)."""
         p = self._phase
         roi = _ROI_MAP.get(p, RoiMode.FULL)
-        follow = LaneColor.WHITE  # 로터리 ROI 방식 폐기 → 항상 흰 차선 추종.
+        follow = LaneColor.WHITE  # 항상 흰 차선 추종(노랑 폐기).
 
-        # 정지 게이트: 출발 대기 / 도착 / 장애물(아루코).
+        # 정지 게이트: 출발 대기 / 종료 정지 / 장애물(아루코).
         if p in (MissionPhase.WAIT_START_SIGNAL, MissionPhase.FINISH_STOP):
             return self._stop_command(follow, roi)
-        if p == MissionPhase.DYNAMIC_OBSTACLE_ZONE and obs.aruco_present:
+        if p == MissionPhase.OBSTACLE_ZONE and obs.aruco_present:
             return self._stop_command(follow, roi)  # obstacle_stop.
 
         # 주행: 아래층 반응형 + 미션 지시 오버레이.
@@ -200,9 +230,22 @@ class MissionSequencer:
         cmd.follow_color = follow
         cmd.roi_mode = roi
         cmd.turn_hint = TurnHint.NONE
-        if p in _SLOW_PHASES:
+
+        if p == MissionPhase.SIGN_BRANCH:
+            # 흰선 추종은 유지하고 팻말 지시쪽으로 조향 bias만 얹는다 + 감속.
+            cmd.speed_scale = min(cmd.speed_scale, self.cfg.sign_branch_speed_scale)
+            cmd.steer_bias = self._sign_steer_bias()
+        elif p == MissionPhase.OBSTACLE_ZONE:
             cmd.speed_scale = min(cmd.speed_scale, self.cfg.slow_speed_scale)
         return cmd
+
+    def _sign_steer_bias(self) -> float:
+        """@brief 래치된 팻말 방향 → 조향 bias(트림 전 raw: +=좌, -=우). NONE=0(직진)."""
+        if self._sign_dir == SignDirection.LEFT:
+            return +float(self.cfg.steer_bias_value)
+        if self._sign_dir == SignDirection.RIGHT:
+            return -float(self.cfg.steer_bias_value)
+        return 0.0
 
     def _stop_command(self, follow: LaneColor, roi: RoiMode) -> DriveCommand:
         """@brief 정지 게이트 명령(현재 지시 색/ROI 유지)."""

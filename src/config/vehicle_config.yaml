@@ -1,7 +1,12 @@
 # Camera configuration
 USB_CAM: true
 MIPI_CAM: false
-USB_CAM_DEVICE: /dev/video1
+# [07-15] /dev/video1 → by-id 고정경로. USB 재연결/재부팅 때마다 리눅스가 꽂힌 순서대로
+# 번호를 매겨 장치 번호가 밀린다(C920이 video1→video2로 이동해 카메라 열기 실패했음).
+# by-id는 카메라 이름 기반이라 번호가 밀려도 항상 같은 장치를 가리킨다(재발 방지).
+#   확인: ls -l /dev/v4l/by-id/    (index0=캡처용, index1=메타데이터라 index0을 쓴다)
+#   카메라를 바꾸면 이 경로도 바뀌니 위 명령으로 새 이름 확인 후 갱신할 것.
+USB_CAM_DEVICE: /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920-video-index0
 IMAGE_WIDTH: 320
 IMAGE_HEIGHT: 160
 # 센서 캡처 해상도(=수평 화각 결정). C920은 16:9 센서라 4:3로 캡처하면 좌우가
@@ -17,6 +22,15 @@ ROI_LEFT: 0
 
 # Vehicle control parameters
 STEER_TRIM: 0.2238
+
+# ESC 스로틀 데드밴드 보상 (control_node → d3racer).
+# ESC는 중립(1500µs) 위로 일정 폭까지 모터가 안 돈다(죽은 구간). 선형 매핑은 이
+# 구간에 스로틀 하위 영역을 통째로 버려 저속이 안 나간다(0.35까지 올려야 겨우 감).
+# 아래는 '전진에서 모터가 실제로 도는 최소 펄스[µs]' — p→0+ 를 이 펄스로 매핑해
+# 작은 throttle에도 바로 구동. 실측(스로틀 조금씩↑, 바퀴가 처음 도는 값)으로 튜닝.
+#   1500 = 보상 off(기존 선형). 저속 안 나가면 ↑, 저속이 너무 빠르면 ↓.
+THROTTLE_FWD_START_US: 1650
+THROTTLE_REV_START_US: 1500   # 후진(미사용). 필요 시 후진 시작 펄스로 조정.
 
 # Web server configuration
 WEB_HOST: 0.0.0.0

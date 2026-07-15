@@ -1,5 +1,5 @@
 """@file mission_node.py
-@brief 미션(Mission) ROS2 노드 — core MissionSequencer(12-state)의 얇은 래퍼.
+@brief 미션(Mission) ROS2 노드 — core MissionSequencer(6-state)의 얇은 래퍼.
 
 @details
 `core.planning.MissionSequencer`(위층 미션 SM + 내부 반응형 DecisionMaker)를 그대로
@@ -7,11 +7,11 @@
 노드는 토픽 구독/변환/발행만 하는 얇은 래퍼다(시뮬↔실차 로직 일원화).
 
 @par 구독 → 발행
-- 구독 `/perception/lane_status`(racer_msgs/LaneStatus): 차선 기하 + 노랑/흰 검출.
-- 구독 `/perception/mission_cues`(racer_msgs/MissionCues): 신호등·체커보드·빨강·아루코.
-- 발행 `/decision/drive_command`(racer_msgs/DriveCommand): 제어 게이트(state/go/배율).
+- 구독 `/perception/lane_status`(racer_msgs/LaneStatus): 차선 기하.
+- 구독 `/perception/mission_cues`(racer_msgs/MissionCues): 신호등·아루코·팻말(색/방향).
+- 발행 `/decision/drive_command`(racer_msgs/DriveCommand): 제어 게이트(state/go/배율/steer_bias).
 - 발행 `/decision/lane_mode`(racer_msgs/LaneMode): **인지 역방향 지시**
-  (follow_color/roi_mode/turn_bias). 인지가 이 지시대로 ROI/mask/target을 적용한다.
+  (roi_mode/yolo_enable/sign_enable). 인지가 이 지시대로 ROI/YOLO 게이트를 적용한다.
 
 @par 안전 (fail-safe)
 - 타이머(rate_hz)마다 최신 관측으로 판단·발행.
@@ -63,6 +63,7 @@ from core.planning import (  # noqa: E402
     MissionObservation,
     MissionPhase,
     MissionSequencer,
+    SignDirection,
     TrafficLight,
 )
 
@@ -110,7 +111,7 @@ class MissionNode(Node):
             f'  구독 lane_status={lane_topic}, mission_cues={cues_topic}\n'
             f'  발행 drive_command={cmd_topic}, lane_mode={mode_topic}\n'
             f'  rate_hz={self.rate_hz} lane_timeout={self.lane_timeout}s\n'
-            '  범위: 12-state 미션 SM(+내부 반응형). ROI/mask/target/bias는 인지 몫.'
+            '  범위: 6-state 미션 SM(+내부 반응형). ROI/mask/target은 인지 몫.'
         )
 
         self.pub_cmd = self.create_publisher(DriveCommand, cmd_topic, 1)
@@ -143,7 +144,6 @@ class MissionNode(Node):
         lane_msg = self._last_lane
         if stale or lane_msg is None:
             lane = LaneObservation(lane_detected=False)   # watchdog: 미검출.
-            on_yellow = False
         else:
             lane = LaneObservation(
                 lane_detected=bool(lane_msg.lane_detected),
@@ -155,16 +155,15 @@ class MissionNode(Node):
                 stop_line_dist=float(lane_msg.stop_line_dist),
                 stop_request=False,
             )
-            on_yellow = bool(lane_msg.on_yellow)
 
         c = self._last_cues
         return MissionObservation(
             lane=lane,
             traffic_light=TrafficLight(int(c.traffic_light)) if c else TrafficLight.NONE,
-            on_yellow=on_yellow,
-            red_zone_detected=bool(c.red_zone_detected) if c else False,
             aruco_present=bool(c.aruco_present) if c else False,
-            checkerboard_detected=bool(c.checkerboard_detected) if c else False,
+            sign_detected=bool(getattr(c, 'sign_detected', False)) if c else False,
+            sign_direction=(SignDirection(int(getattr(c, 'sign_direction', 0)))
+                            if c else SignDirection.NONE),
         )
 
     def _on_timer(self):
@@ -189,6 +188,7 @@ class MissionNode(Node):
         out.speed_scale = float(cmd.speed_scale)
         out.lookahead_scale = float(cmd.lookahead_scale)
         out.steer_limit = float(cmd.steer_limit)
+        out.steer_bias = float(cmd.steer_bias)     # 팻말 분기 조향 offset(그 외 0.0).
         self.pub_cmd.publish(out)
 
         mode = LaneMode()
@@ -196,7 +196,8 @@ class MissionNode(Node):
         mode.follow_color = int(cmd.follow_color)
         mode.roi_mode = int(cmd.roi_mode)
         mode.turn_bias = int(cmd.turn_hint)
-        mode.yolo_enable = bool(cmd.yolo_enable)   # 인지 YOLO 추론 게이트(페이즈별 on/off).
+        mode.yolo_enable = bool(cmd.yolo_enable)   # 신호등 YOLO 게이트(출발/빨간불 종료).
+        mode.sign_enable = bool(cmd.sign_enable)   # 팻말 YOLO 게이트(SIGN_BRANCH만).
         self.pub_mode.publish(mode)
 
         self._tick += 1
@@ -207,8 +208,9 @@ class MissionNode(Node):
             self.get_logger().info(
                 f'phase={phase.name} '
                 f'go={cmd.go} speed={cmd.speed_scale:.2f} '
-                f'follow={cmd.follow_color.name} roi={cmd.roi_mode.name} '
-                f'bias={cmd.turn_hint.name} yolo={"ON" if cmd.yolo_enable else "OFF"} '
+                f'roi={cmd.roi_mode.name} steer_bias={cmd.steer_bias:+.2f} '
+                f'yolo={"ON" if cmd.yolo_enable else "OFF"} '
+                f'sign={"ON" if cmd.sign_enable else "OFF"} '
                 f'{"(stale)" if stale else ""}'
             )
 

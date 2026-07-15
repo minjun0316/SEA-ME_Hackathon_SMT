@@ -193,6 +193,13 @@ class MissionConfig:
     slow_speed_scale: float = 0.5            ##< 장애물 구역 등 감속 구간 속도 상한 배율.
     # --- YOLO 추론 게이트 ---
     yolo_gate_enable: bool = True            ##< True=페이즈별 YOLO on/off(출발·도착만 ON, 주행중 OFF로 FPS 확보). False=게이트 끔(항상 ON=기존 동작).
+    # --- 방향 팻말 분기(SIGN_BRANCH) — 07-14 ---
+    # 팻말색 트리거로 진입하면 팻말 YOLO(sign_enable)를 켜고 좌/우 판정을 래치, 흰선
+    # 추종은 유지한 채 조향에 steer_bias만 얹는다. 고정시간(룰베이스) 경과하면 복귀.
+    sign_branch_duration: float = 2.0        ##< SIGN_BRANCH 지속 고정시간[s](경과 시 LANE_FOLLOW 복귀).
+    sign_branch_speed_scale: float = 0.5     ##< 팻말 분기 중 속도 상한 배율(감속).
+    # 조향 bias 크기(트림 전 raw[-1,1] 규약: +=좌, -=우). SIGN_LEFT→+, SIGN_RIGHT→-.
+    steer_bias_value: float = 0.15           ##< 팻말 지시쪽으로 얹을 정규화 조향 offset 크기.
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MissionConfig":

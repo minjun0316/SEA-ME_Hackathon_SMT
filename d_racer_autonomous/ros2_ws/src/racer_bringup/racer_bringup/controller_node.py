@@ -390,6 +390,7 @@ class ControllerNode(Node):
         gate_reason = None
         speed_scale = 1.0
         steer_limit = 1.0
+        steer_bias = 0.0     # 팻말 분기(SIGN_BRANCH) 조향 offset. 그 외 0.0.
         if cmd is not None:
             cmd_age = (self.get_clock().now() - self._drive_cmd_time).nanoseconds * 1e-9
             if cmd_age > self.lane_timeout:
@@ -398,6 +399,7 @@ class ControllerNode(Node):
             else:
                 speed_scale = float(cmd.speed_scale)
                 steer_limit = float(cmd.steer_limit)
+                steer_bias = float(getattr(cmd, 'steer_bias', 0.0))
                 if (not cmd.go) or cmd.state in (int(DriveState.STOP), int(DriveState.LOST)):
                     gate_stop = True
                     gate_reason = 'gate'
@@ -462,6 +464,12 @@ class ControllerNode(Node):
                 self._last_speed = sp.target_speed
                 steering = float(pp.steering_norm)
                 dbg = f'κ={pp.curvature:+.3f} Ld={pp.lookahead:.2f}'
+            # 팻말 분기(SIGN_BRANCH) 조향 bias: 흰선 추종 위에 좌/우로 살짝 얹는다(+=좌).
+            # 정규화 조향 규약(steer_trim 이미 포함)에 그대로 가산. 최종 [-1,1] 클램프.
+            if steer_bias != 0.0:
+                steering = float(np.clip(steering + steer_bias, -1.0, 1.0))
+                if dbg is not None:
+                    dbg += f' bias={steer_bias:+.2f}'
             # steer_limit(정규화 조향 상한) 적용.
             if steer_limit < 1.0:
                 steering = max(-steer_limit, min(steer_limit, steering))

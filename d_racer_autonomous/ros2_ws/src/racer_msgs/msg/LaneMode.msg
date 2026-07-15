@@ -13,6 +13,11 @@ uint8 turn_bias      # target 좌/우 bias(아래 BIAS_* 상수)
 # 발행자(mission_node) 없으면 인지는 기본 ON 유지(하위호환: 기존처럼 YOLO 항상 켜짐).
 bool yolo_enable     # true=YOLO 추론 ON, false=OFF(skip)
 
+# [2026-07-14] 방향 팻말 YOLO(별도 모델) 게이트. 팻말 구간(SIGN_BRANCH)에서만 true.
+# yolo_enable(신호등 모델)과 독립 — 두 모델을 페이즈별로 따로 켜서 CPU/FPS를 아낀다.
+# 발행자 없으면 인지는 기본 OFF(팻말 모델은 필요 구간에만 켜는 게 안전).
+bool sign_enable     # true=팻말 YOLO 추론 ON, false=OFF(skip)
+
 # follow_color 상수 (core.planning.LaneColor 값과 일치)
 uint8 COLOR_WHITE=0
 uint8 COLOR_YELLOW=1

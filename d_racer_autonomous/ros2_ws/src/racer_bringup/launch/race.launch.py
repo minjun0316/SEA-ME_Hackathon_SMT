@@ -48,9 +48,10 @@ def generate_launch_description():
                               description='주행 스로틀(정규화). 평소 값으로 지정.'),
         DeclareLaunchArgument('throttle_limit', default_value='0.15',
                               description='스로틀 하드 클램프 상한.'),
-        DeclareLaunchArgument('stopline_maneuver', default_value='True',
+        DeclareLaunchArgument('stopline_maneuver', default_value='False',
                               description='정지선 카운트→개루프 고정스티어 기동(로터리 진입/탈출). '
-                                          '레이스 기본 ON(1번째 우회전, 2번째 좌회전). 끄려면 stopline_maneuver:=False.'),
+                                          '[2026-07-14] 흰선 폐루프 코스=로터리 없음 → 기본 OFF. '
+                                          '로터리 코스 복귀 시 stopline_maneuver:=True.'),
         DeclareLaunchArgument('lateral_controller', default_value='lateral_pd',
                               description='횡제어 법칙: lateral_pd(기본) | pure_pursuit.'),
     ]

@@ -62,7 +62,9 @@ class MonitorNode(Node):
         self.declare_parameter('sliding_window_topic', '/perception/lane/debug/compressed')
         self.declare_parameter('bev_topic', '/perception/lane/debug/bev/compressed')
         self.declare_parameter('lane_edge_topic', '/perception/lane/debug/edges/compressed')
-        self.declare_parameter('yolo_topic', '/perception/test/yolo_detect/debug/compressed')
+        # mission_cues_node가 주행 중 이미 돌리는 추론의 오버레이를 재사용한다.
+        # yolo_detect_test_node를 따로 띄우면 같은 모델이 코어 2,3에서 이중으로 추론한다.
+        self.declare_parameter('yolo_topic', '/perception/mission_cues/yolo/debug/compressed')
         self.declare_parameter('control_topic', '/control')
         self.declare_parameter('lane_status_topic', '/perception/lane_status')
         self.declare_parameter('joystick_topic', 'joystick')
@@ -72,7 +74,7 @@ class MonitorNode(Node):
         self.declare_parameter('web_port', 5000)
         self.declare_parameter('page_title', 'D-Racer Monitor')
         self.declare_parameter('refresh_interval_ms', 1000)
-        self.declare_parameter('image_refresh_interval_ms', 300)
+        self.declare_parameter('image_refresh_interval_ms', 100)
         self.declare_parameter('stale_timeout_sec', 3.0)
         self.declare_parameter('image_source_width', 160)
         self.declare_parameter('image_source_height', 120)
@@ -186,12 +188,8 @@ class MonitorNode(Node):
                 self.debug_sliding_window_callback,
                 10,
             )
-            self.create_subscription(
-                CompressedImage,
-                self.bev_topic,
-                self.debug_bev_callback,
-                10,
-            )
+            # BEV 패널 송출 제거(07-14): 브라우저 동시 스트림 슬롯 확보. 구독/폴링/타일 모두 제거.
+            # (flask /api/frame/bev 라우트·state 'bev' 슬롯은 참조 끊긴 무해 데드코드로 잔존.)
             self.create_subscription(
                 CompressedImage,
                 self.lane_edge_topic,

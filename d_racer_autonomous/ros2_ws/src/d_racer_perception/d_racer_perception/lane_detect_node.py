@@ -55,7 +55,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy  # noqa: E402
 from sensor_msgs.msg import CompressedImage  # noqa: E402
 from nav_msgs.msg import Path as PathMsg  # noqa: E402
 from geometry_msgs.msg import PoseStamped  # noqa: E402
-from racer_msgs.msg import LaneStatus  # noqa: E402
+from racer_msgs.msg import LaneStatus, LaneMode  # noqa: E402
 
 from core.perception.lane_detect import LaneDetector, LaneCalib  # noqa: E402
 
@@ -73,6 +73,11 @@ class LaneDetectNode(Node):
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('publish_debug', True)
         self.declare_parameter('debug_jpeg_quality', 80)
+        # 방향 팻말 → 차선 선택(07-14): 판단(/decision/lane_mode.turn_bias)을 구독해
+        # BIAS_LEFT/RIGHT면 그 쪽 차선을 강제 anchor(커브·dual 무시), 팻말 방향으로
+        # sign_lane_offset_m만큼 더 붙인다. BIAS_NONE이면 adaptive_anchor 자동으로 복귀.
+        self.declare_parameter('lane_mode_topic', '/decision/lane_mode')
+        self.declare_parameter('sign_lane_offset_m', 0.0)
 
         # 캘리브(core.LaneCalib 미러). 기본값=LaneCalib 기본값.
         d = LaneCalib()
@@ -81,14 +86,9 @@ class LaneDetectNode(Node):
         self.declare_parameter('x_near_m', d.x_near_m)
         self.declare_parameter('bev_top_y', d.bev_top_y)
         self.declare_parameter('bev_top_x', d.bev_top_x)
-        self.declare_parameter('yellow_pixel_threshold', d.yellow_pixel_threshold)
-        self.declare_parameter('yellow_over_white_ratio', d.yellow_over_white_ratio)
-        # 노랑 지름길 래치(on_yellow, hysteresis) — 미션 SHORTCUT 진입 신호. @see LaneCalib.
-        self.declare_parameter('on_yellow_min_px', d.on_yellow_min_px)
-        self.declare_parameter('on_yellow_dom_ratio', d.on_yellow_dom_ratio)
-        self.declare_parameter('on_yellow_enter_frames', d.on_yellow_enter_frames)
-        self.declare_parameter('on_yellow_exit_frames', d.on_yellow_exit_frames)
-        # 노랑 HLS 임계(H,L,S) 하한/상한. 점선 노랑이 잘 안 잡히면 S/L 하한을 낮춰 튜닝.
+        self.declare_parameter('white_pixel_threshold', d.white_pixel_threshold)
+        # 노랑 HLS 임계(H,L,S) 하한/상한 — 차선추종에선 폐기(흰선-only), 이제 정지선
+        # (_stopline, stopline_color=yellow) 마스크만 참조. 정지선 노랑이 잘 안 잡히면 S/L 하한 튜닝.
         self.declare_parameter('yellow_lo', [int(v) for v in d.yellow_lo])
         self.declare_parameter('yellow_hi', [int(v) for v in d.yellow_hi])
         # 흰 HLS 임계(H,L,S). white_adaptive=False 기본 경로가 이 값을 씀. 이전엔 노드가
@@ -121,6 +121,16 @@ class LaneDetectNode(Node):
         self.declare_parameter('single_anchor', d.single_anchor)
         self.declare_parameter('anchor_side', d.anchor_side)
         self.declare_parameter('anchor_hold_frames', d.anchor_hold_frames)
+        # 적응형 anchor(3-state 하이브리드): 직선/양선=dual, 커브=바깥선 single 자동 전환.
+        self.declare_parameter('adaptive_anchor', d.adaptive_anchor)
+        self.declare_parameter('both_enter_frames', d.both_enter_frames)
+        self.declare_parameter('both_exit_frames', d.both_exit_frames)
+        self.declare_parameter('curve_dx_deadband_px', d.curve_dx_deadband_px)
+        self.declare_parameter('sign_force_max_curve_px', d.sign_force_max_curve_px)
+        self.declare_parameter('sign_force_straight_frames', d.sign_force_straight_frames)
+        self.declare_parameter('sign_apply', d.sign_apply)
+        self.declare_parameter('perp_offset', d.perp_offset)
+        self.declare_parameter('perp_max_slope', d.perp_max_slope)
         self.declare_parameter('seed_reacquire_blend', d.seed_reacquire_blend)
         self.declare_parameter('seed_lock_hist_blend', d.seed_lock_hist_blend)
         self.declare_parameter('seed_hist_band_px', d.seed_hist_band_px)
@@ -145,12 +155,7 @@ class LaneDetectNode(Node):
             bev_top_y=float(self.get_parameter('bev_top_y').value),
             bev_top_x=float(self.get_parameter('bev_top_x').value),
             bev_matrix=_bev,
-            yellow_pixel_threshold=int(self.get_parameter('yellow_pixel_threshold').value),
-            yellow_over_white_ratio=float(self.get_parameter('yellow_over_white_ratio').value),
-            on_yellow_min_px=int(self.get_parameter('on_yellow_min_px').value),
-            on_yellow_dom_ratio=float(self.get_parameter('on_yellow_dom_ratio').value),
-            on_yellow_enter_frames=int(self.get_parameter('on_yellow_enter_frames').value),
-            on_yellow_exit_frames=int(self.get_parameter('on_yellow_exit_frames').value),
+            white_pixel_threshold=int(self.get_parameter('white_pixel_threshold').value),
             yellow_lo=tuple(int(v) for v in self.get_parameter('yellow_lo').value),
             yellow_hi=tuple(int(v) for v in self.get_parameter('yellow_hi').value),
             white_lo=tuple(int(v) for v in self.get_parameter('white_lo').value),
@@ -178,6 +183,17 @@ class LaneDetectNode(Node):
             single_anchor=bool(self.get_parameter('single_anchor').value),
             anchor_side=str(self.get_parameter('anchor_side').value),
             anchor_hold_frames=int(self.get_parameter('anchor_hold_frames').value),
+            adaptive_anchor=bool(self.get_parameter('adaptive_anchor').value),
+            both_enter_frames=int(self.get_parameter('both_enter_frames').value),
+            both_exit_frames=int(self.get_parameter('both_exit_frames').value),
+            curve_dx_deadband_px=float(self.get_parameter('curve_dx_deadband_px').value),
+            sign_force_max_curve_px=float(
+                self.get_parameter('sign_force_max_curve_px').value),
+            sign_force_straight_frames=int(
+                self.get_parameter('sign_force_straight_frames').value),
+            sign_apply=str(self.get_parameter('sign_apply').value),
+            perp_offset=bool(self.get_parameter('perp_offset').value),
+            perp_max_slope=float(self.get_parameter('perp_max_slope').value),
             seed_reacquire_blend=float(self.get_parameter('seed_reacquire_blend').value),
             seed_lock_hist_blend=float(self.get_parameter('seed_lock_hist_blend').value),
             seed_hist_band_px=float(self.get_parameter('seed_hist_band_px').value),
@@ -207,6 +223,16 @@ class LaneDetectNode(Node):
         # 중간단계(bev/edges 등) 퍼블리셔는 처음 등장할 때 생성(core가 내보내는 키에 맞춤).
         self._stage_pubs: dict = {}
 
+        # 방향 팻말 강제 anchor 상태(판단 /decision/lane_mode.turn_bias 구독).
+        self._force_side = None       ##< 'left'|'right'|None. None=adaptive 자동.
+        # 오프셋[m] → BEV px(팻말 방향 추가 붙임). m_per_px_lateral로 환산(0이면 0).
+        _off_m = float(self.get_parameter('sign_lane_offset_m').value)
+        _mppl = float(calib.m_per_px_lateral)
+        self._sign_offset_px = (abs(_off_m) / _mppl) if _mppl > 1e-9 else 0.0
+        lane_mode_topic = str(self.get_parameter('lane_mode_topic').value)
+        self.sub_lane_mode = self.create_subscription(
+            LaneMode, lane_mode_topic, self.on_lane_mode, reliable_q)
+
         # 카메라 구독(best-effort로 최신 프레임만).
         self.sub = self.create_subscription(
             CompressedImage, image_topic, self.on_image, best_effort_q)
@@ -215,9 +241,20 @@ class LaneDetectNode(Node):
         self.get_logger().info(
             f'lane_detect_node ready: sub={image_topic} → '
             f'pub {status_topic} + {path_topic} (frame={self.base_frame}). '
-            f'YOLO/미션 없음(차선 추종 전용). '
+            f'팻말 차선지시 구독={lane_mode_topic} '
+            f'(offset={_off_m}m={self._sign_offset_px:.0f}px). '
             f'm/px(f,l)=({calib.m_per_px_forward},{calib.m_per_px_lateral}), '
             f'x_near={calib.x_near_m}m [잠정, 트랙 튜닝 필요]')
+
+    def on_lane_mode(self, msg: LaneMode):
+        """@brief 판단 역채널: turn_bias(팻말 좌/우) → 강제 anchor 쪽 갱신."""
+        bias = int(msg.turn_bias)
+        new_side = ('left' if bias == LaneMode.BIAS_LEFT
+                    else 'right' if bias == LaneMode.BIAS_RIGHT else None)
+        if new_side != self._force_side:
+            self.get_logger().info(
+                f'팻말 차선지시: force_side={new_side or "NONE(adaptive 복귀)"}')
+        self._force_side = new_side
 
     def on_image(self, msg: CompressedImage):
         """@brief compressed 디코드 → detect → lane_status + lane_path 발행."""
@@ -227,7 +264,9 @@ class LaneDetectNode(Node):
             self.get_logger().warn('프레임 디코드 실패', throttle_duration_sec=2.0)
             return
 
-        res = self.detector.detect(frame, want_debug=self.publish_debug)
+        res = self.detector.detect(
+            frame, want_debug=self.publish_debug,
+            force_side=self._force_side, sign_offset_px=self._sign_offset_px)
         stamp = msg.header.stamp  # 촬영시각 승계(watchdog 타이밍 정확).
 
         # --- lane_status ---
@@ -241,7 +280,7 @@ class LaneDetectNode(Node):
         s.heading_error = float(res.heading_error)
         s.stop_line = bool(res.stop_line)
         s.stop_line_dist = float(res.stop_line_dist)
-        s.on_yellow = bool(res.on_yellow)  # 노랑 지름길 래치(hysteresis) → 미션 SHORTCUT 신호.
+        s.on_yellow = False  # 지름길(노랑추종) 폐기(07-14). 필드는 계약 호환 유지, 항상 False.
         # 정지선 인식 순간(False→True) 즉시 로그 — 인식 여부를 눈으로 확인.
         if s.stop_line and not getattr(self, '_prev_stopline', False):
             self.get_logger().info(f'>>> STOPLINE 인식! dist={s.stop_line_dist:.2f}m')

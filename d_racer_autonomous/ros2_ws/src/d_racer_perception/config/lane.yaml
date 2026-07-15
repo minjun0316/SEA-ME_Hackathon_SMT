@@ -32,28 +32,13 @@ lane_detect_node:
     # 노랑/흰 HLS 임계(H,L,S). 2026-07-14 인지팀 실측값(calibrate_hls)으로 교체.
     # OpenCV BGR2HLS 규약: H 0~179, L/S 0~255. H 범위가 넓어 L·S가 주 판별축.
     # 재측정 시 calibrate_hls 트랙바로 값 다시 잡아 여기(+core LaneCalib 기본값) 갱신.
+    # 노랑 HLS 임계 — 차선추종에선 폐기(흰선-only, 07-14). 정지선(stopline_color=yellow) 전용.
     yellow_lo: [0, 146, 129]
     yellow_hi: [153, 225, 255]
     # 흰색 고정 임계(white_adaptive=False 경로가 사용). 노드가 파라미터로 물려 여기서 튜닝.
     white_lo: [0, 213, 0]
     white_hi: [172, 255, 255]
-    yellow_pixel_threshold: 200
-    # 노랑 '우세'(노랑-only 마스크) 판정: 노랑 > yellow_pixel_threshold AND 노랑 >= 흰색×이 비율.
-    # 07-14: 0.01→0.5, 임계 15→250. on_yellow 래치가 지름길 노랑모드를 담당하게 되면서
-    # (use_yellow_only = on_yellow OR yellow_dominant), 이 매프레임 판정은 '강한 노랑만'
-    # 즉시반응하도록 조임 — 흰 구간서 소량 노랑(얼룩/반사)에 노랑모드로 새던 오작동 방지.
-    # 노랑모드 진입이 늦으면 임계↓/ratio↓, 흰 구간서 노랑으로 새면 ↑.
-    yellow_over_white_ratio: 0.2
-
-    # --- 노랑 지름길 래치(on_yellow) — 미션 SHORTCUT 진입 신호(hysteresis) ---
-    # '노랑 우세'(노랑 픽셀 ≥ min_px AND 노랑 ≥ 흰색×dom_ratio) 프레임이 enter_frames
-    # 연속이면 ON, 비우세가 exit_frames 연속이면 OFF. exit>enter 비대칭이 점선 갭을 견딤.
-    # 마스크 선택(yellow_over_white_ratio)과 독립. 트랙 튜닝: SHORTCUT 진입이 늦으면
-    # enter_frames↓/min_px↓, 흰선 구간에서 오래치되면 dom_ratio↑/min_px↑.
-    on_yellow_min_px: 300         # 노랑 절대 픽셀 하한(stray 배제)
-    on_yellow_dom_ratio: 1.2      # 노랑 ≥ 흰색×이 배 여야 우세
-    on_yellow_enter_frames: 5     # 연속 우세 프레임 → ON(~0.25s@20fps)
-    on_yellow_exit_frames: 15     # 연속 비우세 프레임 → OFF(~0.75s, 점선 갭 견딤)
+    white_pixel_threshold: 200    # 흰 픽셀 이 이상이면 white_detected=True(진단용 하한)
 
     # --- 에지(Canny) 입력/임계 (흰선 끊김 개선, 07-10) ---
     # 정리한 lane_mask에 직접 Canny → 윤곽 연속·깨끗(gray/blur 대비 '인식했다 말았다' 완화).
@@ -92,27 +77,65 @@ lane_detect_node:
     # --- 단일 기준선 고정 추종(single_anchor) — 오른선 하나만 추적(붕괴/좌우헷갈림 원천 차단) ---
     # 중심선 = 오른선 − lane_width_px/2. 오른선 소실(점선 갭) 시 anchor_hold_frames 동안
     # 직전 피팅 유지(coast). 지름길 오른선=실선(중간 점선)이라 hold 넉넉히. dual 되돌리려면 false.
-    single_anchor: true
-    anchor_side: left           # 이 트랙: 오른선이 화면 밖으로 나가 왼선 기준. 중심선 = 왼선 + lane_width_px/2
-    anchor_hold_frames: 12      # 점선 갭 견딤(넉넉히). 소실서 반대선 튀면 ↓, 갭서 끊기면 ↑
+    single_anchor: false        # 고정 단일 기준선 모드. 아래 adaptive_anchor와 배타(true면 adaptive 무시).
+    anchor_side: left           # single_anchor=true일 때만 의미. 이 트랙: 오른선이 화면 밖으로 나가 왼선 기준.
+    anchor_hold_frames: 12      # 단일 모드 소실 시 직전 anchor 유지 프레임(점선 갭 coast). 소실서 반대선 튀면 ↓, 갭서 끊기면 ↑
 
-    # --- 단일-기준선 추종 / 양선 전환 히스테리시스(07-14) ---
-    # 우회전 구간처럼 한쪽(왼)만 안정 검출되면 그 선 하나만 추종(중심=선±폭/2, 법선).
-    # 반대선(오른쪽)이 min_sep(=lane_collapse_frac×폭) 밖에서 both_enter_frames 연속
-    # 검출돼야 양선중심으로 승격 → 반대 없는 쪽으로 튀기(문제1)·합쳐진 창 편향(문제2) 제거.
-    lane_collapse_frac: 0.5   # 양선 인정 최소 수평간격 = 이 값×lane_width_px(140px→70px).
-    both_enter_frames: 3      # 양선 안정검출 이만큼 연속 → 양선중심 승격(~0.15s@20fps). 승격 늦으면 ↓.
-    both_exit_frames: 5       # 한쪽 소실/붕괴 이만큼 연속 → 단일선 강등. 점선 갭에 흔들리면 ↑.
-    perp_offset: true         # 한쪽만 볼 때 폭/2 오프셋을 법선(수직)으로. 곡선서 수평오프셋 부족→치우침(우회전 이탈) 방지. false=옛 수평.
+    # --- 적응형 anchor(3-state): 직선/양선=dual, 커브=바깥선 single 자동 전환 (07-14 신규) ---
+    # 기하: 커브에서 안쪽 선이 BEV 옆으로 먼저 빠지고 바깥(커브 반대쪽) 선이 남는다
+    # → 오른쪽 커브=왼선 anchor, 왼쪽 커브=오른선 anchor. 직선·양선 뚜렷하면 dual(양선 중앙).
+    # 커브에선 안쪽(노이즈·소실) 선을 무시 → dual 붕괴/조기치우침(3번 커브 이탈) 원천 차단.
+    adaptive_anchor: true       # false=순수 dual(기존). true=커브방향 따라 dual↔단일 자동.
+    curve_dx_deadband_px: 18.0  # |near-x − far-x|[BEV px] 이 값 초과면 '커브' 판정(직선 격리). 커브 전환 늦으면 ↓, 직선서 자꾸 단일로 새면 ↑.
+    # 방향 팻말 강제 anchor 시(판단 turn_bias) 그 차선 중앙에서 팻말 방향으로 더 붙일
+    # 오프셋[m]. 0=차선 중앙만. >0이면 팻말쪽으로 치우쳐 '그쪽으로 가는' 느낌. 실차서 올려가며 튜닝.
+    lane_mode_topic: /decision/lane_mode
+    # [07-15] 팻말이 '도로 정중앙'에 서 있고 양쪽으로 통로가 갈리는 구조(장애물 회피).
+    # 지시된 쪽 끝차선을 anchor하면 중심 = 그 선 ± W/2 = 도로 한가운데 = 팻말 자리(충돌!).
+    # → 팻말 반대쪽(바깥)으로 W/4 만큼 밀어 '그쪽 통로 한가운데'로 보낸다.
+    #   도로폭 146px=36.6cm → 통로 하나 18.3cm → 통로 중앙 = 끝선에서 9.1cm = W/4.
+    # 부호는 코드가 자동(왼선 anchor면 왼쪽으로, 오른선이면 오른쪽으로 = 항상 팻말 반대).
+    # [07-15 실차] 0.09 확정 — 속도를 조금 올려 차선에 제대로 진입시키니 통로 중앙으로
+    # 잘 들어갔다(앞서 흰선을 넘던 건 오프셋 과다가 아니라 진입 문제였음).
+    # 팻말을 긁으면 ↑(0.11), 바깥 흰선을 넘어가면 ↓(0.07).
+    # [07-15] 0.09 → 0.0: 경로 offset 방식 폐기. lateral_pd가 부드러운 차선유지용이라
+    # 9cm 스텝에 조향 0.042밖에 안 나와 반응이 늦었다 → **판단의 고정조향 기동**으로 교체
+    # (decision_node sign_steer_value=0.2 를 sign_steer_sec=1.0 동안 직접 얹음).
+    # 0으로 둬야 이중 적용이 안 된다. 고정조향을 끄고(sign_steer_enable=false) 옛 방식으로
+    # 돌아가려면 여기 0.09를 되살릴 것.
+    sign_lane_offset_m: 0.0
+    # [07-15] 팻말 강제의 '커브 게이트': |curve_dx|가 이 값을 넘으면(=커브 중) 팻말 지시를
+    # 무시하고 기하학(adaptive) 추종을 유지한다. S자 끝은 팻말과 가까워 거리 게이트
+    # (mission_cues.sign_min_box_h_frac)로 안 갈렸다 → '커브냐 직선이냐'라는 다른 축으로 분리.
+    # 직선이 되면 그때 팻말이 먹는다. S자서 또 팻말이 개입하면 ↓(12), 분기가 살짝 굽어
+    # 팻말이 안 먹으면 ↑(25~30). 0=게이트 끔.
+    sign_force_max_curve_px: 18.0
+    # [07-15] S자 변곡점 대책: 좌↔우가 바뀌는 순간 curve_dx가 0을 지나 '직선'으로 보여
+    # 게이트가 열리고 팻말이 튀어들어왔다 → '직선이 이만큼 연속'돼야 팻말 허용.
+    # 변곡점의 찰나 직선은 못 채워 차단되고, 진짜 직선 접근로는 채워서 통과한다.
+    # 아래 sign_force_* 는 sign_apply="anchor"일 때만 의미. "offset"에선 미사용.
+    sign_force_straight_frames: 6    # ~0.3s @20fps
+
+    # [07-15 실차 확정] 팻말 적용 방식. 실트랙은 팻말로 이어지는 접근로가 '커브'다.
+    #   anchor 방식은 커브에서 양립 불가였다: 강제하면 커브 기하학이 깨져 추종 실패,
+    #   직선 게이트로 막으면 커브 접근로에선 영영 발동 못 해 팻말에 정면충돌.
+    #   → "offset": 기하학이 만든 중심선을 팻말 반대쪽으로 평행이동만 한다.
+    #     차선 추종 로직을 안 건드리므로 커브에서도 안전하고, 커브/직선 게이트도 불필요.
+    sign_apply: offset               # offset(기본) | anchor(옛 방식, 직선 전용)
+
+    # --- 3-state 모드 전환 히스테리시스 / 붕괴판정 / 법선오프셋 (adaptive_anchor가 사용) ---
+    lane_collapse_frac: 0.5   # 양선 인정 최소 수평간격 = 이 값×lane_width_px(146px→73px). 이보다 좁으면 붕괴로 보고 dual 승격 안 함.
+    both_enter_frames: 3      # 직선+양선 뚜렷 이만큼 연속 → dual(양선중앙) 복귀(~0.15s@20fps). dual 복귀 늦으면 ↓.
+    both_exit_frames: 3       # 커브 감지(또는 좌↔우) 이만큼 연속 → 바깥선 단일 전환. 커브 진입 늦으면 ↓, 직선서 자꾸 단일로 새면 ↑.
+    perp_offset: true         # 단일 모드서 폭/2 오프셋을 법선(수직)으로. 곡선서 수평오프셋 부족→치우침 방지. false=옛 수평.
     perp_max_slope: 1.5       # 법선 배율 √(1+slope²)의 slope(dx/dy) 절댓값 상한(병적 피팅 오프셋 폭주 방지). 중심이 반대차선 넘으면 ↓.
-    yellow_side: right        # 노랑=오른쪽 갈림길 분기선 → 노랑 단일추종 중심=노랑-폭/2(노랑 왼쪽=원 차로 쪽). left면 반대.
 
     # --- lost 재획득 시 base fallback (07-10) ---
     # 히스토그램 peak 열의 에지량이 (스캔행수×255×seed_min_fill) 미만이면 그쪽 차선을
     # '미검출'로 보고 base를 화면 25%/75%에 고정(argmax가 0/노이즈를 base로 잡는 것 방지).
     # ↑ 노이즈를 차선으로 오인하면(엉뚱한 점 지속) 올리고, 흐린 차선을 자꾸 놓치면 내려.
     seed_min_fill: 0.05
-    seed_reacquire_blend: 0.8 # lost 재획득: base = prev*(1-b) + hist_peak*b. 0.5=반반.
+    seed_reacquire_blend: 0.7 # lost 재획득: base = prev*(1-b) + hist_peak*b. 0.5=반반.
 
     # --- lock 중 히스토그램 블렌딩 (07-10, 기본 off) ---
     # lock(추종 중)에도 매 프레임 hist peak를 seed에 섞어 커브 지연↓. 0.0=off(순수 prev).

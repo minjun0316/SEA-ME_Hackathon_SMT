@@ -37,11 +37,12 @@ class LaneCalib:
     bev_matrix: Optional[Tuple[float, ...]] = None
 
     # --- HLS 색 임계 (H, L, S) ---
-    # 노랑/흰 HLS 임계(H,L,S). 2026-07-14 인지팀 실측값(calibrate_hls)으로 갱신.
+    # 흰 HLS 임계(H,L,S). 2026-07-14 인지팀 실측값(calibrate_hls)으로 갱신.
     # OpenCV BGR2HLS 규약: H 0~179, L/S 0~255. 실차 lane.yaml과 동기화한다(yaml이 최종
     # 소스지만 누락 키가 stale 기본값으로 새지 않도록 일치시킴). 재측정 시 양쪽 갱신.
-    yellow_lo: Tuple[int, int, int] = (0, 146, 129)
-    yellow_hi: Tuple[int, int, int] = (153, 225, 255)
+    # 노랑(yellow_lo/hi)은 차선추종에선 폐기됐고 이제 _stopline(정지선색)만 참조한다.
+    yellow_lo: Tuple[int, int, int] = (0, 146, 129)  ##< 정지선(stopline_color=yellow) 전용.
+    yellow_hi: Tuple[int, int, int] = (153, 225, 255)  ##< 〃
     white_lo: Tuple[int, int, int] = (0, 213, 0)     ##< white_adaptive=False 경로가 사용(하한)
     white_hi: Tuple[int, int, int] = (172, 255, 255)  ##< 〃 상한
     # 흰색 마스크 방식. 기본 False = 원본 C++ 고정 임계(white_lo/hi = inRange((0,200,0),
@@ -60,13 +61,7 @@ class LaneCalib:
     white_l_floor: int = 90             ##< L 하한 최소(칠흑 프레임서 노이즈 폭주 방지)
     white_l_cap: int = 250              ##< L 하한 최대(과도한 상승 방지)
     white_s_hi: int = 75               ##< 흰색 최대 채도 S(무채색만 통과, 유채색 배제)
-    yellow_pixel_threshold: int = 200  ##< 노랑 픽셀 이 이상이면 노랑 우세 후보(절대 하한). 07-14 20→200(소량 노랑 무시).
-    # 노랑 '우세' 판정에 절대 픽셀수만 쓰면, 흰 차선의 warm-tint 조각(수백 px)이
-    # 임계(30)를 넘겨 '노랑 우세'로 오판→흰 차선을 통째로 버린다(=흰선 인식 실패,
-    # edges 뚝뚝 끊김). 그래서 상대 조건을 추가: 노랑이 흰색의 이 비율 이상일 때만
-    # 노랑-only. 1.0=노랑이 흰색보다 많아야 우세(실제 노란 차선이면 성립, 흰선 조각은
-    # 미달→노랑∪흰 유지). 노란 차선을 자꾸 놓치면 ↓(0.6), 흰선이 노랑에 밀리면 ↑.
-    yellow_over_white_ratio: float = 0.25
+    white_pixel_threshold: int = 200   ##< 흰 픽셀 이 이상이면 white_detected=True(진단용 하한).
 
     # --- 에지(Canny) 입력/임계 ---
     # 원래는 (마스킹 BGR→gray→blur→Canny). 마스크가 이미 이진 차선영역이라, blur한
@@ -100,7 +95,7 @@ class LaneCalib:
     # 이상일 때만 섞는다(garbage 프레임은 유지). 커브에서 lock seed가 뒤처지는 지연을
     # 줄이는 용도. 켜면 지연↓·추종성↑, 과하면 노이즈로 seed가 떨릴 수 있어 0.1~0.3 권장.
     seed_lock_hist_blend: float = 0.3
-    seed_hist_band_px: float = 70.0     ##< lock 블렌딩 시 prev 주변 peak 탐색 밴드(±px)
+    seed_hist_band_px: float = 60.0     ##< lock 블렌딩 시 prev 주변 peak 탐색 밴드(±px)
     # 한쪽 차선이 화면 밖으로 나갔을 때(커브) 복원용 차선폭[BEV px]. 두 선이 다
     # 보이는 프레임에서 자동 학습하며, 이 값은 학습 전/한번도 못 본 경우의 초기값.
     lane_width_px: float = 180.0
@@ -121,26 +116,36 @@ class LaneCalib:
     single_anchor: bool = False        ##< True=단일 기준선 고정 추종(dual 우회).
     anchor_side: str = 'right'         ##< 고정 기준 경계선: 'right'(기본) | 'left'.
     anchor_hold_frames: int = 10       ##< 기준선 소실 시 직전 피팅 유지 최대 프레임(점선 갭).
-    # --- 노랑 우선 단일선 추종(07-12) --------------------------------- #
-    # 곡선서 노랑이 잠깐 사라지면 흰선으로 기준이 넘어가 이탈하던 문제 해결:
-    # 노란선 '하나'를 색 분리 edge에서 단일 슬라이딩윈도우로 추적하고, 중심선은
-    # 노란선 ± 차선폭/2 로 오프셋한다(좌/우 두 창이 안 싸워 collapse도 원천 제거).
-    # 노랑 소실 시 yellow_hold_frames 동안 직전 노랑 피팅을 전방연장해 '예측 유지'
-    # (흰선으로 절대 안 넘어감), 그 이상 없으면 그때만 흰선+반대오프셋 폴백. 노랑 복귀 즉시 재고정.
-    follow_yellow: bool = True   ##< False=옛 좌/우 midpoint(_sliding_window) 경로로 폴백
-    yellow_side: str = "auto"    ##< 노랑이 주행선 기준 어느 쪽 경계: left|right|auto(둘다 보일 때 학습)
-    yellow_hold_frames: int = 8  ##< 노랑 소실 후 마지막 피팅으로 예측 유지할 최대 프레임(초과→흰 폴백)
-    yellow_min_windows: int = 2  ##< 단일선 유효 판정 최소 검출 윈도우(피팅 최소점=이 값)
 
-    # --- 노랑 지름길 래치(on_yellow) — 미션 SHORTCUT 진입 신호 ------------ #
-    # 계약(LaneStatus.on_yellow): 인지가 노랑 차선을 '안정 검출'하면 ON, 점선 갭엔 유지.
-    # '노랑 우세'(절대 하한 min_px AND 흰색 대비 dom_ratio배 이상) 프레임이 enter_frames
-    # 연속이면 ON 래치, 비우세가 exit_frames 연속이면 OFF. exit>enter 비대칭이 점선 끊김
-    # (노랑 잠깐 소실)을 견디는 hysteresis. 마스크 선택(yellow_over_white_ratio)과 독립 판정.
-    on_yellow_min_px: int = 300        ##< 노랑 절대 픽셀 하한(stray 노랑 배제).
-    on_yellow_dom_ratio: float = 1.2   ##< 노랑 >= 흰색×이 배 여야 '우세'(흰선 구간 오래치 방지).
-    on_yellow_enter_frames: int = 5    ##< 연속 우세 프레임 ≥ → ON 래치(~0.25s@20fps).
-    on_yellow_exit_frames: int = 15    ##< 연속 비우세 프레임 ≥ → OFF 래치(~0.75s, 점선 갭 견딤).
+    # --- 적응형 anchor(3-state 하이브리드): 직선/양선=dual, 커브=바깥선 single ---
+    # 기하: 커브에서는 안쪽 선이 BEV 화면 옆으로 먼저 빠져나가고 바깥(커브 반대쪽) 선이
+    # 프레임에 남는다 → 오른쪽 커브=왼선 anchor, 왼쪽 커브=오른선 anchor. 직선·양선
+    # 뚜렷하면 dual(양선 중앙). 커브에선 안쪽(노이즈·소실) 선을 아예 무시해 dual 붕괴/
+    # 조기치우침을 원천 차단. single_anchor(고정)와 배타 — single_anchor=True면 이건 무시.
+    adaptive_anchor: bool = False      ##< True=커브방향 따라 dual↔단일(바깥선) 자동 전환.
+    both_enter_frames: int = 3         ##< 단일→dual 승격: 양선 뚜렷+직선 이만큼 연속 프레임.
+    both_exit_frames: int = 3          ##< dual→단일(또는 좌↔우) 전환: 커브 이만큼 연속 프레임.
+    curve_dx_deadband_px: float = 18.0  ##< |near-x−far-x| 이 값 초과면 '커브'로 판정(직선 격리).
+    # 팻말 강제 anchor의 커브 게이트(07-15): |curve_dx|가 이 값을 넘으면(=커브 중) 팻말
+    # 지시를 무시하고 기하학(adaptive) 추종을 유지한다. S자 끝은 팻말과 거리가 가까워
+    # 거리 게이트(sign_min_box_h_frac)로는 안 갈렸다 → '커브냐 직선이냐'라는 다른 축으로 분리.
+    # 직선이 되면 그때 팻말이 먹는다. 0=게이트 끔(커브에서도 팻말 강제 허용).
+    sign_force_max_curve_px: float = 18.0  ##< 이 값 초과 커브면 팻말 강제 무시(기하학 우선).
+    # S자 변곡점 대책(07-15): 좌↔우가 바뀌는 순간 curve_dx가 0을 지나 '직선'으로 보여
+    # 게이트가 열리고 팻말이 튀어들어왔다(프레임 하나로는 변곡점을 커브라 판정 불가 —
+    # 피팅이 2차라 S자를 표현 못 함). → '직선이 이만큼 연속'돼야 팻말을 허용한다.
+    # 변곡점의 찰나 직선은 이 수를 못 채워 막히고, 진짜 직선 접근로는 채워서 통과한다.
+    sign_force_straight_frames: int = 15  ##< 팻말 강제 허용에 필요한 연속 직선 프레임(~0.75s@20fps).
+    # 팻말 적용 방식(07-15). 실트랙은 팻말로 이어지는 접근로가 '커브'라, anchor 교체
+    # 방식은 커브 기하학을 파괴해 추종이 깨지고(강제하면) / 직선 게이트에 막혀 영영
+    # 발동을 못 해(안 하면) 팻말을 들이받았다 — 커브 접근로에선 양립 불가.
+    #   "offset"(기본) = 기하학이 만든 중심선을 팻말 반대쪽으로 평행이동만 한다.
+    #                    차선 추종 로직을 전혀 안 건드려 커브에서도 안전. 커브/직선
+    #                    게이트(sign_force_*) 불필요.
+    #   "anchor"       = 옛 방식(지시된 쪽 끝차선으로 anchor 교체). 직선 구간 전용.
+    sign_apply: str = "offset"           ##< "offset" | "anchor".
+    perp_offset: bool = True           ##< 단일 anchor 시 W/2 오프셋을 법선(수직)으로(곡선 치우침 보정).
+    perp_max_slope: float = 1.5        ##< 법선 배율 √(1+slope²)의 slope(dx/dy) 절댓값 상한(폭주 방지).
 
     # 중심선 노이즈 완화: 경로점을 다항식(y~x)으로 피팅해 매끄럽게. 슬라이딩윈도우
     # 창별 흔들림이 조향 휘청임으로 이어지는 걸 방지(직선·커브 공통). order 2면 곡선까지.
@@ -193,11 +198,8 @@ class LaneResult:
     # 진단(계약 밖, 튜닝용): 왜 검출/미검출인지 숫자로 확인.
     stopline_cov_max: float = 0.0  ##< 정지선 ROI 행 커버리지 최댓값(0~1). row_coverage 임계와 비교.
     stopline_n_band: int = 0       ##< 커버리지 임계 넘은 행수. min_rows 임계와 비교.
-    yellow_detected: bool = False
-    yellow_confidence: float = 0.0
     white_detected: bool = False
     white_confidence: float = 0.0
-    on_yellow: bool = False        ##< 노랑 지름길 래치(hysteresis). @see LaneCalib.on_yellow_*. 미션 SHORTCUT 신호.
     # lane_path: (x,y) 미터, base_link, near→far
     lane_path: List[Tuple[float, float]] = field(default_factory=list)
     debug_image: Optional[np.ndarray] = None
@@ -219,21 +221,25 @@ class LaneDetector:
         # 단일 기준선 추종(single_anchor) 상태
         self._anchor_fit = None      ##< 직전 기준선 창별 x 배열(소실 hold coast용).
         self._anchor_age = 999       ##< 기준선 마지막 검출 이후 프레임(0=이번 프레임 검출).
-        # --- 노랑 우선 단일선 추종 상태(follow_yellow) ---
-        self._last_yellow_x = None   ##< 직전 노랑 near-x(단일선 seed)
-        self._last_white_x = None    ##< 직전 흰 near-x(폴백 seed)
-        self._last_yellow_fit = None ##< (line_over_windows, cys). 소실 시 hold 예측용.
-        self._last_yellow_frac = 0.0 ##< 직전 노랑 검출 창비율(hold conf 감쇠 기준)
-        self._yellow_age = 999       ##< 노랑 마지막 검출 이후 프레임(0=이번 프레임 검출)
-        self._yellow_side = None     ##< 학습된 노랑 쪽 부호(+1=노랑이 좌경계, -1=우경계)
-        # --- 노랑 지름길 래치(on_yellow) 상태 ---
-        self._on_yellow = False        ##< 래치 상태(미션 SHORTCUT 신호).
-        self._yellow_lead_run = 0      ##< 연속 '노랑 우세' 프레임 수(ON 판정).
-        self._yellow_notlead_run = 0   ##< 연속 '비우세' 프레임 수(OFF 판정).
+        # 적응형 anchor(3-state) 상태
+        self._lane_mode = 'dual'     ##< 현재 모드: 'dual' | 'left' | 'right'.
+        self._pending_mode = None    ##< 전환 대기 중인 목표 모드(히스테리시스).
+        self._pending_count = 0      ##< 목표 모드 연속 프레임 수.
+        self._adapt_fit = None       ##< 적응형 단일 모드 anchor 선 coast용.
+        self._adapt_age = 999        ##< 적응형 anchor 마지막 검출 이후 프레임.
+        self._adapt_side = None      ##< _adapt_fit이 어느 쪽 선인지('left'|'right'). coast 오염 방지.
+        self._straight_frames = 0    ##< 연속 '직선' 프레임 수(팻말 강제 허용 판정용).
 
     # ------------------------------------------------------------------ #
-    def detect(self, frame: np.ndarray, want_debug: bool = False) -> LaneResult:
-        """@brief 한 프레임 처리. @param frame BGR 이미지. @return LaneResult."""
+    def detect(self, frame: np.ndarray, want_debug: bool = False,
+               force_side: Optional[str] = None,
+               sign_offset_px: float = 0.0) -> LaneResult:
+        """@brief 한 프레임 처리. @param frame BGR 이미지.
+        @param force_side 판단(팻말)이 지시한 강제 anchor 쪽('left'|'right'|None).
+                          None이면 adaptive_anchor 자동(커브/직선). 지정 시 커브·dual을
+                          무시하고 그 쪽 차선만 추종한다.
+        @param sign_offset_px 강제 anchor 시 차선중심에서 팻말 방향으로 더 붙일 오프셋[BEV px].
+        @return LaneResult."""
         res = LaneResult()
         if frame is None or getattr(frame, 'size', 0) == 0:
             return res
@@ -245,47 +251,45 @@ class LaneDetector:
         bev = self._to_bev(frame)
         hls = cv2.cvtColor(bev, cv2.COLOR_BGR2HLS)
 
-        yellow = cv2.inRange(hls, np.array(c.yellow_lo), np.array(c.yellow_hi))
+        # 흰선-only 폐루프(07-14): 지름길(노랑 차선추종) 폐기 → 차선 마스크는 흰선만.
+        # 노랑 마스크/래치/anchor-solidity는 전부 제거. (정지선 검출은 _stopline이
+        # 자체 노랑 마스크를 따로 만들어 쓰므로 여기 흰선-only와 무관하게 유지된다.)
         white = self._white_mask(hls)
-        yellow_px = int(cv2.countNonZero(yellow))
         white_px = int(cv2.countNonZero(white))
 
-        res.yellow_detected = yellow_px > c.yellow_pixel_threshold
-        res.white_detected = white_px > c.yellow_pixel_threshold
-        res.yellow_confidence = min(1.0, yellow_px / c.color_conf_pixels)
+        res.white_detected = white_px > c.white_pixel_threshold
         res.white_confidence = min(1.0, white_px / c.color_conf_pixels)
-        # 노랑 지름길 래치(hysteresis). 미션 SHORTCUT 신호로 발행 + 아래 마스크 고정에 사용.
-        res.on_yellow = self._update_on_yellow(yellow_px, white_px)
-
-        # 마스크 선택. 노랑 '우세'(절대 하한 초과 AND 흰색 대비 비율)면 노랑-only, 아니면 노랑∪흰.
-        yellow_dominant = (yellow_px > c.yellow_pixel_threshold
-                           and yellow_px >= white_px * c.yellow_over_white_ratio)
-        # 지름길 통합: on_yellow 래치 중엔 노랑-only로 '고정'한다. 래치가 hysteresis라
-        # 점선 갭에 yellow_dominant가 잠깐 뒤집혀도 흰선으로 안 새고 노랑모드를 유지한다
-        # (mission_fsm §4: 지름길 노랑추종 = 인지 노랑모드 = 노랑만 마스킹). 슬라이딩윈도우가
-        # 이 마스크를 그대로 소비하므로, 래치가 곧 '노랑선 연속 추종'을 보장한다.
-        use_yellow_only = self._on_yellow or yellow_dominant
-        lane_mask = yellow if use_yellow_only else cv2.bitwise_or(yellow, white)
+        lane_mask = white
 
         edges = self._edges_from_mask(bev, lane_mask)
 
         debug = bev.copy() if want_debug else None
 
-        # 디버그 오버레이(방식 A): 노랑/흰 마스크를 슬라이딩윈도우와 '같은 화면'에서 대조할
-        # 수 있게 debug(=BEV)에 반투명 색으로 덧칠한다. 마스크는 이미 BEV 좌표라 정확히
+        # 디버그 오버레이(방식 A): 흰선 마스크를 슬라이딩윈도우와 '같은 화면'에서 대조할
+        # 수 있게 debug(=BEV)에 반투명 초록으로 덧칠한다. 마스크는 이미 BEV 좌표라 정확히
         # 정렬된다. 여기서 먼저 칠하고 아래에서 박스/중심선을 그려 그 위에 올라오므로
-        # 박스·선은 가려지지 않는다. yellow_dominant로 흰 마스크가 실제 lane_mask에서
-        # 빠지더라도, '왜 노랑 우세로 판정됐는지'를 보려면 두 마스크 다 보이는 게 유용해
-        # 둘 다 칠한다(디버그 전용, 제어에는 무관). 별도 스트림이 아니라 같은 JPEG 위 덧칠
-        # 이라 브라우저 폴링/대역폭 부담은 사실상 늘지 않는다.
+        # 박스·선은 가려지지 않는다(디버그 전용, 제어에는 무관).
         if debug is not None:
             overlay = debug.copy()
-            overlay[yellow > 0] = (255, 0, 128)   # 노랑 마스크 → 보라
             overlay[white > 0] = (0, 255, 0)      # 흰 마스크 → 초록
             cv2.addWeighted(overlay, 0.4, debug, 0.6, 0.0, dst=debug)
 
         # --- 중심선 점열(BEV px, near→far) + confidence ---
-        centerline_px, confidence = self._sliding_window(edges, debug)
+        # sign_apply="offset"이면 슬라이딩윈도우엔 팻말을 넘기지 않는다(기하학 순수 유지)
+        # → 아래에서 최종 중심선만 평행이동. "anchor"면 옛 방식대로 anchor를 교체한다.
+        _offset_mode = (c.sign_apply == 'offset')
+        centerline_px, confidence = self._sliding_window(
+            edges, debug,
+            force_side=(None if _offset_mode else force_side),
+            sign_offset_px=sign_offset_px)
+
+        # 팻말 offset: 기하학이 만든 중심선을 팻말 반대쪽(=지시된 통로 쪽)으로 평행이동.
+        # 팻말이 도로 정중앙에 선 장애물이라, 중심선 그대로면 정면충돌 → 옆 통로로 민다.
+        # 커브/직선 무관하게 안전(추종 로직 자체는 손대지 않으므로).
+        if (_offset_mode and force_side in ('left', 'right')
+                and centerline_px and sign_offset_px):
+            _dx = float(sign_offset_px) * (1.0 if force_side == 'right' else -1.0)
+            centerline_px = [(cx + _dx, cy) for (cx, cy) in centerline_px]
         res.confidence = confidence
         res.lane_detected = len(centerline_px) >= 2 and confidence > 0.0
 
@@ -329,12 +333,11 @@ class LaneDetector:
 
         # 중간 단계 노출(모니터 디버그 화면용). BEV=원근변환, edges=Canny 결과.
         if want_debug:
-            # LANE EDGE 판 좌상단에 현재 마스크 모드 표기: 노랑-only면 yl(래치면 yl-lock)
-            # ('yl'), 아니면 노랑+흰('yl+wh'). 글자는 반드시 '복사본'에만 그린다 —
-            # 원본 edges는 위 _sliding_window 탐지 입력이라 글자 획이 가짜 에지로
-            # 섞이면 탐지가 오염된다(디버그 전용, 제어 무관).
+            # LANE EDGE 판 좌상단에 마스크 모드 표기(흰선-only='wh'). 글자는 반드시
+            # '복사본'에만 그린다 — 원본 edges는 위 _sliding_window 탐지 입력이라 글자
+            # 획이 가짜 에지로 섞이면 탐지가 오염된다(디버그 전용, 제어 무관).
             edges_dbg = edges.copy()
-            mode_label = 'yl' if yellow_dominant else 'yl+wh'
+            mode_label = 'wh'
             cv2.putText(edges_dbg, mode_label, (6, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, 255, 2, cv2.LINE_AA)
             res.debug_stages = {'bev': bev, 'edges': edges_dbg}
@@ -362,35 +365,6 @@ class LaneDetector:
         l_lo = int(round(c.white_adaptive_k * float(np.percentile(L, c.white_pct))))
         l_lo = int(np.clip(l_lo, c.white_l_floor, c.white_l_cap))
         return ((L >= l_lo) & (S <= c.white_s_hi)).astype(np.uint8) * 255
-
-    # ------------------------------------------------------------------ #
-    def _update_on_yellow(self, yellow_px: int, white_px: int) -> bool:
-        """@brief 노랑 지름길 래치(hysteresis) 갱신. @return 래치 상태(on_yellow).
-
-        @param yellow_px 이번 프레임 노랑 마스크 픽셀 수.
-        @param white_px  이번 프레임 흰 마스크 픽셀 수.
-
-        @details '노랑 우세'(절대 하한 on_yellow_min_px AND 흰색 대비 on_yellow_dom_ratio
-        배 이상) 프레임이 on_yellow_enter_frames 연속이면 ON 래치, 비우세가
-        on_yellow_exit_frames 연속이면 OFF 래치. exit>enter 비대칭으로 점선 끊김(노랑
-        잠깐 소실)을 견딘다(계약 LaneStatus.on_yellow가 명시한 hysteresis). 연속 스트릭이라
-        갭 중간에 우세 프레임이 한 번이라도 들어오면 OFF 카운터가 리셋돼 래치가 유지된다.
-        마스크 선택(yellow_over_white_ratio)과 무관한 독립 판정이다.
-        """
-        c = self.calib
-        lead = (yellow_px >= c.on_yellow_min_px
-                and yellow_px >= white_px * c.on_yellow_dom_ratio)
-        if lead:
-            self._yellow_lead_run += 1
-            self._yellow_notlead_run = 0
-        else:
-            self._yellow_notlead_run += 1
-            self._yellow_lead_run = 0
-        if not self._on_yellow and self._yellow_lead_run >= c.on_yellow_enter_frames:
-            self._on_yellow = True
-        elif self._on_yellow and self._yellow_notlead_run >= c.on_yellow_exit_frames:
-            self._on_yellow = False
-        return self._on_yellow
 
     # ------------------------------------------------------------------ #
     def _edges_from_mask(self, bev: np.ndarray, lane_mask: np.ndarray) -> np.ndarray:
@@ -500,8 +474,80 @@ class LaneDetector:
         b = c.seed_lock_hist_blend
         return int(prev_x * (1.0 - b) + peak * b)
 
-    def _sliding_window(self, edges: np.ndarray, debug):
-        """@brief 좌/우 차선 슬라이딩 윈도우. @return (centerline_px[near→far], confidence)."""
+    @staticmethod
+    def _curve_dx(left_line, right_line, left_ok, right_ok):
+        """@brief 커브 방향/세기 = 중심선(또는 검출된 한 선)의 near→far x 변화량[px].
+
+        @return +우커브(far가 오른쪽) / −좌커브 / None(판단 불가). |값|이 클수록 급커브.
+        """
+        if left_ok and right_ok:
+            ref = (left_line + right_line) / 2.0
+        elif left_ok:
+            ref = left_line
+        elif right_ok:
+            ref = right_line
+        else:
+            return None
+        return float(ref[-1] - ref[0])
+
+    def _anchor_centerline(self, use_left, anchor_line, anchor_ok, lane_w,
+                           cys, cys_arr, lfound, rfound, midpoint, leftx, rightx,
+                           extra_offset_px=0.0):
+        """@brief 단일 기준선(바깥/강제) → 중심선. 소실 시 coast, perp 오프셋, seed 갱신.
+
+        @param use_left True=왼선 anchor(중심은 오른쪽 +W/2), False=오른선(−W/2).
+        @param extra_offset_px 차선중심에서 추가로 실을 오프셋[px](팻말 방향 붙임). 부호 포함.
+        @return (centerline_px, confidence). adaptive 단일모드와 강제(팻말) 모드가 공유.
+        """
+        c = self.calib
+        side = 'left' if use_left else 'right'
+        if anchor_ok:
+            self._adapt_fit = anchor_line              # 실검출 → 갱신
+            self._adapt_age = 0
+            self._adapt_side = side
+            n_side = sum(lfound if use_left else rfound)
+            conf = n_side / float(c.nwindows)
+            anchor = anchor_line
+        elif (self._adapt_fit is not None and self._adapt_side == side
+              and self._adapt_age < c.anchor_hold_frames):
+            anchor = self._adapt_fit                   # 소실: 같은 쪽 직전 anchor 유지(coast)
+            self._adapt_age += 1
+            conf = max(c.seed_lock_conf, self._last_conf * 0.9)
+        else:
+            anchor = None                              # 완전 소실/반대쪽 fit뿐 → 직진 폴백
+            conf = 0.0
+        if anchor is not None:
+            half = lane_w / 2.0
+            sign = 1.0 if use_left else -1.0
+            if c.perp_offset:
+                slope = np.gradient(anchor, cys_arr)   # dx/dy(row별)
+                slope = np.clip(slope, -c.perp_max_slope, c.perp_max_slope)
+                scale = np.sqrt(1.0 + slope * slope)
+            else:
+                scale = 1.0
+            cxs = anchor + sign * half * scale + extra_offset_px
+            centerline = [(float(cxs[i]), cys[i]) for i in range(c.nwindows)]
+            near = float(anchor[0])
+            if use_left:
+                self._last_leftx, self._last_rightx = near, near + lane_w
+            else:
+                self._last_rightx, self._last_leftx = near, near - lane_w
+        else:
+            centerline = [(float(midpoint), cys[i]) for i in range(c.nwindows)]
+            self._last_leftx, self._last_rightx = leftx, rightx
+        if c.lane_width_learn and lane_w > 1.0:
+            self._lane_width_px = lane_w
+        self._last_conf = conf
+        return centerline, conf
+
+    def _sliding_window(self, edges: np.ndarray, debug,
+                        force_side=None, sign_offset_px=0.0):
+        """@brief 좌/우 차선 슬라이딩 윈도우. @return (centerline_px[near→far], confidence).
+
+        @param force_side 판단(팻말) 강제 anchor 쪽('left'|'right'|None). 지정 시 커브감지·
+                          dual·single_anchor를 모두 무시하고 그 쪽 차선만 추종.
+        @param sign_offset_px 강제 anchor 시 팻말 방향으로 추가로 붙일 오프셋[px](>=0 크기).
+        """
         c = self.calib
         h, w = edges.shape[:2]
         midpoint = w // 2
@@ -608,9 +654,49 @@ class LaneDetector:
         else:
             lane_w = float(c.lane_width_px)   # 학습 off: 항상 고정값(표류 없음)
 
+        # --- 강제 anchor(팻말 지시): 커브감지·dual·single_anchor 전부 무시하고 그 쪽만 ---
+        # 판단이 방향 팻말(좌/우)을 래치해 force_side로 내려주면, 그 방향 차선을 강제
+        # 추종하고 팻말 방향으로 sign_offset_px만큼 더 붙인다(offset 부호=왼선 −, 오른선 +).
+        # 팻말이 풀리면(force_side=None) 아래 adaptive/single 자동 로직으로 복귀한다.
+        # --- 커브/직선 판정 + 연속 직선 카운터(팻말 강제 게이트용) ---
+        # 매 프레임 갱신한다(팻말 유무와 무관). 커브면 카운터를 0으로 리셋하므로,
+        # S자 변곡점처럼 '찰나만 직선'인 구간은 카운터가 못 쌓여 팻말이 차단된다.
+        curve_dx = self._curve_dx(left_line, right_line, left_ok, right_ok)
+        if curve_dx is not None and abs(curve_dx) > c.sign_force_max_curve_px:
+            self._straight_frames = 0                  # 커브 → 리셋
+        else:
+            self._straight_frames += 1                 # 직선(또는 판단불가) → 누적
+
+        if force_side in ('left', 'right'):
+            # 커브 게이트: '직선이 sign_force_straight_frames 연속' 이어야 팻말을 허용.
+            # 커브 중이거나, 변곡점처럼 직선이 잠깐뿐이면 → 기하학(adaptive) 추종 유지.
+            if (c.sign_force_max_curve_px > 0.0
+                    and self._straight_frames < c.sign_force_straight_frames):
+                force_side = None                      # 아직 직선 확정 아님 → 자동 로직으로.
+
+        if force_side in ('left', 'right'):
+            use_left = (force_side == 'left')
+            anchor_line = left_line if use_left else right_line
+            anchor_ok = left_ok if use_left else right_ok
+            # 지시된 쪽 차선이 이번 프레임에 없고 같은 쪽 coast도 만료면, 강제를 포기하고
+            # 아래 자동(adaptive/dual)으로 폴백한다. 그대로 강제하면 conf=0(미검출)이 나가
+            # 판단이 LOST→정지해 버린다(팻말을 멀리서 잡으면 그 구간엔 아직 그 차선이
+            # 안 보여 차가 서는 실패모드). 없는 차선을 좇느니 평소 주행을 유지하는 게 안전.
+            can_coast = (self._adapt_fit is not None
+                         and self._adapt_side == force_side
+                         and self._adapt_age < c.anchor_hold_frames)
+            if anchor_ok or can_coast:
+                self._lane_mode = force_side           # 모니터/일관성용 모드 반영
+                extra = (-1.0 if use_left else 1.0) * float(sign_offset_px)
+                return self._anchor_centerline(
+                    use_left, anchor_line, anchor_ok, lane_w, cys, cys_arr,
+                    lfound, rfound, midpoint, leftx, rightx, extra_offset_px=extra)
+
         # --- 단일 기준선 고정 추종(single_anchor): 오른선 하나만, 붕괴/정체성 우회 ---
         if c.single_anchor:
-            right = (c.anchor_side != 'left')          # 기본 오른쪽 경계선
+            # anchor 경계 = 설정값 c.anchor_side(메인: 오른선 화면밖→left).
+            anchor_side = c.anchor_side
+            right = (anchor_side != 'left')            # 오른쪽 경계선 여부
             anchor = right_line if right else left_line
             anchor_ok = right_ok if right else left_ok
             if anchor_ok:
@@ -641,6 +727,63 @@ class LaneDetector:
                 self._lane_width_px = lane_w
             self._last_conf = conf
             return centerline, conf
+
+        # --- 적응형 anchor(3-state): 직선/양선=dual, 커브=바깥선 single 자동 전환 ---
+        # 기하: 커브에서 '안쪽' 선이 BEV 옆으로 먼저 빠지고 '바깥'(커브 반대쪽) 선이
+        # 프레임에 남는다 → 오른쪽 커브=왼선 anchor, 왼쪽 커브=오른선 anchor. 직선·양선
+        # 뚜렷하면 dual(양선 중앙). 커브에선 안쪽(노이즈·소실) 선을 무시해 dual 붕괴/
+        # 조기치우침을 원천 차단. 모드 전환은 히스테리시스로 채터링 방지.
+        if c.adaptive_anchor:
+            # 1) 커브 방향/세기: 위에서 계산한 curve_dx 재사용.
+            #    curve_dx>0=우커브(far가 오른쪽), <0=좌커브. |·|가 deadband 이하면 직선.
+
+            both_clean = (left_ok and right_ok and
+                          float(np.mean(right_line - left_line))
+                          >= c.lane_collapse_frac * lane_w)
+
+            # 2) 목표 모드.
+            if curve_dx is None:
+                desired = None                              # 판단 불가 → 현재 유지
+            elif abs(curve_dx) <= c.curve_dx_deadband_px:   # 직선
+                if both_clean:
+                    desired = 'dual'
+                elif left_ok and not right_ok:
+                    desired = 'left'
+                elif right_ok and not left_ok:
+                    desired = 'right'
+                else:
+                    desired = None
+            elif curve_dx > 0.0:
+                desired = 'left'                            # 우커브 → 바깥(왼) 선
+            else:
+                desired = 'right'                           # 좌커브 → 바깥(오른) 선
+
+            # 3) 히스테리시스 커밋: dual 승격은 both_enter_frames, 그 외 전환은
+            #    both_exit_frames 연속 프레임을 요구(1~2프레임 점선 갭·노이즈에 안 흔들림).
+            if desired is None or desired == self._lane_mode:
+                self._pending_mode = None
+                self._pending_count = 0
+            else:
+                if desired == self._pending_mode:
+                    self._pending_count += 1
+                else:
+                    self._pending_mode = desired
+                    self._pending_count = 1
+                need = c.both_enter_frames if desired == 'dual' else c.both_exit_frames
+                if self._pending_count >= need:
+                    self._lane_mode = desired
+                    self._pending_mode = None
+                    self._pending_count = 0
+
+            # 4) 단일(바깥선) 모드면 헬퍼로 중심선 산출·반환(강제모드와 공유). dual이면 낙하.
+            if self._lane_mode in ('left', 'right'):
+                use_left = (self._lane_mode == 'left')
+                anchor_line = left_line if use_left else right_line
+                anchor_ok = left_ok if use_left else right_ok
+                return self._anchor_centerline(
+                    use_left, anchor_line, anchor_ok, lane_w, cys, cys_arr,
+                    lfound, rfound, midpoint, leftx, rightx)
+            # self._lane_mode == 'dual' → 아래 붕괴방지 + 3단계 양선중심 경로로 낙하.
 
         # --- 붕괴(collapse) 방지 ---
         # 노이즈/한쪽 선 끊김으로 좌·우 두 탐색창이 같은 실선 하나에 달라붙으면
