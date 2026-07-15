@@ -158,6 +158,9 @@ class MissionCuesNode(Node):
         # 추론 1번이 같은 값 수십 개로 재발행돼 'N연속'을 스스로 충족시켜 버리기 때문.
         # 시간 기반 확정만이 재발행에 안 속는다. 종료가 늦으면 ↓, 오종료면 ↑.
         self.declare_parameter('tl_red_confirm_sec', 0.5)
+        # 빨강 깜빡임 허용 간격. 비-빨강 프레임이 끼어도 이 시간 안에 빨강이 다시 보이면
+        # 같은 빨강 구간으로 이어 붙여 확정 타이머를 유지한다(모델이 빨강↔초록을 깜빡임).
+        self.declare_parameter('tl_red_gap_sec', 0.5)
         self.declare_parameter('checker_hold_sec', 0.3)      # (폐기) 체커보드 필드용 잔존값.
         # 통합 모델 클래스 id(신호등+팻말 한 모델). 기본=best.pt: 0 green/1 left/2 red/3 right.
         _tc = TrafficCueConfig()
@@ -192,6 +195,7 @@ class MissionCuesNode(Node):
         self.yolo_stale_sec = float(self.get_parameter('yolo_stale_sec').value)
         self.tl_green_confirm_sec = float(self.get_parameter('tl_green_confirm_sec').value)
         self.tl_red_confirm_sec = float(self.get_parameter('tl_red_confirm_sec').value)
+        self.tl_red_gap_sec = float(self.get_parameter('tl_red_gap_sec').value)
         self.checker_hold_sec = float(self.get_parameter('checker_hold_sec').value)
         _yolo_hz = float(self.get_parameter('yolo_max_infer_hz').value)
         self._yolo_min_interval = 1.0 / _yolo_hz if _yolo_hz > 0.0 else 0.0

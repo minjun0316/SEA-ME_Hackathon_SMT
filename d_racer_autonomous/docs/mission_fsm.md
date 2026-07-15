@@ -55,7 +55,10 @@
       │  (팻말 YOLO 좌/우 래치 → steer_bias 얹음. 1회성 래치 _sign_done로 재진입 방지.
       │   분기 중 아루코 보이면 OBSTACLE_ZONE 우선.)
  OBSTACLE_ZONE      (흰,LOWER_ARUCO,감속)    아루코 보임 → STOP, 안 보임 → 재출발
-      │                                     ── 아루코 사라짐 ──▶ FINISH_WATCH
+      │                                     ── 아루코 사라짐(체류≥min_dwell) ──▶ FINISH_WATCH
+      │                                     ── 아루코 사라짐(체류<min_dwell) ──▶ LANE_FOLLOW
+      │  (후자 = 오검출 판정. FINISH_WATCH는 편도라 오검출 1프레임이 팻말 분기를 스킵하고
+      │   첫 빨간불에 코스를 끝내던 것을 막는다. _yolo_relatch도 함께 되돌린다.)
  FINISH_WATCH       (흰,LOWER,신호등YOLO ON) ── 빨간불 ──▶ FINISH_STOP
  FINISH_STOP        (정지, 종료)
 ```
@@ -68,6 +71,10 @@
   `_sign_done`을 세우고 복귀 — 이후 팻말색을 또 봐도 재진입하지 않는다(1회성).
 - **YOLO 게이트(모델 2개 독립)**: 신호등 YOLO = WAIT_START_SIGNAL + (아루코 최초검출
   래치로) FINISH_WATCH까지 ON, 주행중 OFF. 팻말 YOLO = SIGN_BRANCH에서만 ON.
+- **아루코 오검출 방어(07-15)**: 인지 `aruco_hold_sec`(1.0)와 판단 `obstacle_min_dwell_sec`
+  (2.0)는 **짝으로 튜닝한다**. hold가 present를 늘려주므로 OBSTACLE_ZONE 체류시간은
+  (실제 검출시간 + hold)에 해당하고, 실효 요구치 = `min_dwell - hold` = "심판이 마커를
+  실제로 들고 있어야 하는 시간"(현재 1.0s). 한쪽만 바꾸면 방어가 깨진다.
 
 ---
 

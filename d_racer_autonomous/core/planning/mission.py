@@ -19,6 +19,8 @@ sign_enable)를 내고, 눈앞 차선에 대한 즉각 반응(DRIVE/SLOW/LOST)�
    얹는다 → 고정시간(sign_branch_duration) 경과 시 LANE_FOLLOW 복귀(팻말 1회성 래치).
 4. 다시 흰선 기본 추종(LANE_FOLLOW).
 5. 동적 장애물 **아루코 마커**: 보이면 정지, 사라지면 재출발(신호등 YOLO 재점화).
+   단 `obstacle_min_dwell_sec`를 못 채우고 사라지면 오검출로 보고 LANE_FOLLOW 복귀
+   (FINISH_WATCH가 편도라 오검출 1프레임이 코스를 끝내던 것을 막음 — 07-15).
 6. 재출발 후 **빨간불** 감시(FINISH_WATCH) → 빨간불 보이면 정지(FINISH_STOP=종료).
 
 @par 역할 경계
@@ -194,9 +196,19 @@ class MissionSequencer:
                 self._set_phase(MissionPhase.LANE_FOLLOW)
 
         elif p == MissionPhase.OBSTACLE_ZONE:
-            # 마커 치우면(재출발) 빨간불 감시로. 아루코는 종료 근처에만 등장 전제.
+            # 마커가 사라졌다 = 재출발. 단 FINISH_WATCH는 **편도**라(LANE_FOLLOW로 돌아올
+            # 길이 없어 팻말 분기를 영영 스킵하고 첫 빨간불에 코스가 끝난다) 아루코
+            # 오검출 한 프레임이 코스를 통째로 날릴 수 있었다. 최소 체류시간을 못 채웠으면
+            # 오검출로 보고 LANE_FOLLOW로 되돌린다 — 인지의 aruco_hold_sec가 present를
+            # 늘려주므로, 여기 도달한 _phase_time은 (실제 검출시간 + hold)에 해당한다.
             if not obs.aruco_present:
-                self._set_phase(MissionPhase.FINISH_WATCH)
+                if self._phase_time >= self.cfg.obstacle_min_dwell_sec:
+                    self._set_phase(MissionPhase.FINISH_WATCH)
+                else:
+                    # 오검출로 판정 → 진입 前 상태를 그대로 복원(신호등 YOLO 재점화도 취소해
+                    # 주행 구간 FPS를 되찾는다). 진짜 마커면 다시 잡혀 재진입한다.
+                    self._yolo_relatch = False
+                    self._set_phase(MissionPhase.LANE_FOLLOW)
 
         elif p == MissionPhase.FINISH_WATCH:
             # 재출발 후 흰선 주행하며 빨간불 감시. 빨간불 = 종료.

@@ -17,10 +17,10 @@ enable_drive를 켜도 런치 즉시 튀어나가지 않고 초록불이 출발 
 
 @par 실행
 @code{.sh}
-# 조향만(거치대에서 로직 확인) — 스로틀 0
+# 조향만(거치대에서 로직 확인) — enable_drive 기본 False라 스로틀 0
 ros2 launch racer_bringup race.launch.py
-# 실차 주행 — 스로틀 값은 평소처럼 커맨드로 지정
-ros2 launch racer_bringup race.launch.py enable_drive:=True drive_throttle:=0.16 throttle_limit:=0.20
+# 실차 주행 — 스로틀은 기본값(0.04/0.20 = 07-15 실차 확정)이라 enable_drive만 켜면 된다
+ros2 launch racer_bringup race.launch.py enable_drive:=True
 @endcode
 
 @note lane_follow의 나머지 인자(pd_* 튜닝 노브, publish_debug, use_* 등)가 필요하면
@@ -44,9 +44,11 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument('enable_drive', default_value='False',
                               description='True 라야 스로틀 발행(기본 조향만). 초록불 게이트가 실제 출발 제어.'),
-        DeclareLaunchArgument('drive_throttle', default_value='0.0',
-                              description='주행 스로틀(정규화). 평소 값으로 지정.'),
-        DeclareLaunchArgument('throttle_limit', default_value='0.15',
+        # [07-15] 0.0 → 0.04 확정(lane_follow와 동일). FWD_START_US=1575 기준 ≈1592µs
+        # = 이 차의 최저 주행속. 근거·실측표: docs/calibration.md 3-b절.
+        DeclareLaunchArgument('drive_throttle', default_value='0.04',
+                              description='주행 스로틀(정규화). 07-15 실차 확정 0.04(≈1592µs).'),
+        DeclareLaunchArgument('throttle_limit', default_value='0.20',
                               description='스로틀 하드 클램프 상한.'),
         DeclareLaunchArgument('stopline_maneuver', default_value='False',
                               description='정지선 카운트→개루프 고정스티어 기동(로터리 진입/탈출). '

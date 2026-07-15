@@ -200,6 +200,14 @@ class MissionConfig:
     sign_branch_speed_scale: float = 0.5     ##< 팻말 분기 중 속도 상한 배율(감속).
     # 조향 bias 크기(트림 전 raw[-1,1] 규약: +=좌, -=우). SIGN_LEFT→+, SIGN_RIGHT→-.
     steer_bias_value: float = 0.15           ##< 팻말 지시쪽으로 얹을 정규화 조향 offset 크기.
+    # --- 동적 장애물(아루코) — 07-15 ---
+    # 아루코가 사라졌을 때 '진짜 재출발'과 '오검출이었음'을 가르는 최소 체류시간.
+    # 이보다 짧게 머물렀으면 오검출로 보고 FINISH_WATCH가 아니라 LANE_FOLLOW로 되돌린다
+    # (오검출 1프레임이 팻말 분기를 통째로 스킵하고 첫 빨간불에 코스를 끝내던 것을 막음).
+    # ⚠ 인지의 aruco_hold_sec보다 커야 의미가 있다: hold가 present를 늘려주므로 실효
+    #   요구치는 (이 값 - hold_sec) = '심판이 마커를 실제로 들고 있어야 하는 시간'이다.
+    #   현재 hold=1.0 + 이 값 2.0 → 실효 1.0s. 심판이 더 짧게 보여주면 ↓.
+    obstacle_min_dwell_sec: float = 2.0      ##< OBSTACLE_ZONE 최소 체류[s]. 미달 시 오검출로 보고 LANE_FOLLOW 복귀.
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MissionConfig":

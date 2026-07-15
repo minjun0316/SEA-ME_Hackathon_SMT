@@ -57,10 +57,13 @@ def _to_lane_follow(seq):
     assert seq.phase == MissionPhase.LANE_FOLLOW
 
 
-def _to_obstacle(seq):
+def _to_obstacle(seq, dwell=2.5):
     _to_lane_follow(seq)
     seq.update(_obs(aruco_present=True), dt=0.05)   # 아루코=정지구역 진입 트리거.
     assert seq.phase == MissionPhase.OBSTACLE_ZONE
+    # 오검출 방어(obstacle_min_dwell_sec) 통과: 마커를 든 채 최소 체류시간을 채운다.
+    # 이걸 안 채우면 마커를 치웠을 때 FINISH_WATCH가 아니라 LANE_FOLLOW로 되돌아간다.
+    seq.update(_obs(aruco_present=True), dt=dwell)
 
 
 # --- WAIT_START / LANE_FOLLOW --------------------------------------------
@@ -183,6 +186,51 @@ def test_obstacle_zone_stops_on_aruco_then_restarts():
     assert c_go.go is True
 
 
+def test_short_aruco_returns_to_lane_follow_not_finish():
+    """아루코 오검출(최소 체류 미달) → FINISH_WATCH가 아니라 LANE_FOLLOW 복귀.
+
+    FINISH_WATCH는 편도(돌아올 길 없음)라, 오검출 한 프레임이 팻말 분기를 통째로
+    스킵하고 첫 빨간불에 코스를 끝내던 것을 막는다.
+    """
+    seq = MissionSequencer(_cfg(obstacle_min_dwell_sec=2.0))
+    _to_lane_follow(seq)
+    seq.update(_obs(aruco_present=True), dt=0.05)
+    assert seq.phase == MissionPhase.OBSTACLE_ZONE
+    seq.update(_obs(aruco_present=False), dt=0.05)   # 체류 0.1s ≪ 2.0s → 오검출 판정.
+    assert seq.phase == MissionPhase.LANE_FOLLOW
+
+
+def test_short_aruco_keeps_sign_branch_available():
+    """오검출로 되돌아온 뒤에도 팻말 분기는 살아있다(_sign_done이 안 서야 함)."""
+    seq = MissionSequencer(_cfg(obstacle_min_dwell_sec=2.0))
+    _to_lane_follow(seq)
+    seq.update(_obs(aruco_present=True), dt=0.05)    # 오검출.
+    seq.update(_obs(aruco_present=False), dt=0.05)   # → LANE_FOLLOW 복귀.
+    seq.update(_obs(sign_detected=True), dt=0.05)    # 팻말은 여전히 분기시켜야 한다.
+    assert seq.phase == MissionPhase.SIGN_BRANCH
+
+
+def test_short_aruco_cancels_yolo_relatch():
+    """오검출 복귀 시 신호등 YOLO 재점화도 취소 → 주행 구간 FPS 회복."""
+    seq = MissionSequencer(_cfg(obstacle_min_dwell_sec=2.0))
+    _to_lane_follow(seq)
+    cmd = seq.update(_obs(aruco_present=True), dt=0.05)
+    assert cmd.yolo_enable is True                    # 아루코 → 래치 ON.
+    seq.update(_obs(aruco_present=False), dt=0.05)    # 오검출 판정 → 복귀.
+    assert seq.phase == MissionPhase.LANE_FOLLOW
+    assert _tick(seq).yolo_enable is False            # 래치 취소됨.
+
+
+def test_long_aruco_still_reaches_finish_watch():
+    """진짜 마커(최소 체류 충족)는 종전대로 FINISH_WATCH로 간다 — 방어가 정상 정지를 막지 않음."""
+    seq = MissionSequencer(_cfg(obstacle_min_dwell_sec=2.0))
+    _to_lane_follow(seq)
+    seq.update(_obs(aruco_present=True), dt=0.05)
+    seq.update(_obs(aruco_present=True), dt=2.5)      # 심판이 들고 있는 동안.
+    seq.update(_obs(aruco_present=False), dt=0.05)    # 치움 → 재출발.
+    assert seq.phase == MissionPhase.FINISH_WATCH
+
+
 def test_finish_watch_stops_on_red():
     seq = MissionSequencer(_cfg())
     _to_obstacle(seq)
@@ -200,6 +248,7 @@ def test_full_sequence_reaches_finish():
     seq.update(_obs(sign_detected=False), dt=0.1)   # 고정시간 경과 → LANE_FOLLOW
     assert seq.phase == MissionPhase.LANE_FOLLOW
     seq.update(_obs(aruco_present=True), dt=0.05)    # 정지 구역
+    seq.update(_obs(aruco_present=True), dt=2.5)     # 마커 든 채 최소 체류시간 충족
     seq.update(_obs(aruco_present=False), dt=0.05)   # 재출발 → FINISH_WATCH
     cmd = seq.update(_obs(traffic_light=TrafficLight.RED), dt=0.05)
     assert seq.phase == MissionPhase.FINISH_STOP
