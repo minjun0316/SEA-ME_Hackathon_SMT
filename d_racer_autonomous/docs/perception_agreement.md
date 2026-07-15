@@ -43,18 +43,45 @@
 |---|---|---|---|
 | `follow_color` | WHITE / YELLOW | 그 색 차선을 우선 추종 | **항상 WHITE** |
 | `roi_mode` | FULL / LOWER / RIGHT / LEFT / LOWER_ARUCO | 그 ROI로 잘라서 mask·target 추출 | FULL / LOWER / LOWER_ARUCO만 |
-| `turn_bias` | NONE / LEFT / RIGHT | target_x에 방향 bias | **항상 NONE** |
+| `turn_bias` | NONE / LEFT / RIGHT | **팻말의 어느 쪽 통로로 지날지**(중심선에 ±offset) | SIGN_BRANCH에서 **LEFT/RIGHT**, 그 외 NONE |
 
-> RIGHT/LEFT roi_mode·YELLOW·turn_bias는 로터리 ROI 방식 전용이었고 07-13 폐기됨. 값은 msg에
-> 남아 있으나 미션 FSM이 발행하지 않는다(인지는 FULL/LOWER/LOWER_ARUCO·WHITE·NONE만 받게 됨).
+> RIGHT/LEFT roi_mode·YELLOW는 로터리 ROI 방식 전용이었고 07-13 폐기됨. 값은 msg에
+> 남아 있으나 미션 FSM이 발행하지 않는다(인지는 FULL/LOWER/LOWER_ARUCO·WHITE만 받게 됨).
+>
+> **[07-15 밤] `turn_bias`는 되살아났다** — 팻말 분기가 고정조향(오픈루프)에서 **앵커 차선
+> 지시**(폐루프)로 바뀌면서 이 필드가 그 유일한 전달 경로가 됐다. 의미도 로터리 시절의
+> "target_x에 bias"가 아니라 **"팻말의 어느 쪽 통로로 지나라"** 다.
+>
+> **[07-16] 기준선 선택과 팻말 방향을 분리했다**(`sign_apply: anchor → offset`).
+> anchor(= 팻말이 가리키는 쪽 선을 기준선으로)는 실차 2회에서 **한 프레임도 제대로 발동하지
+> 못했다**. 튜닝이 아니라 설계 문제다: **S자에선 그 선이 바로 그때 없다** — 커브에선 '안쪽'
+> 선이 BEV에서 먼저 빠지므로(`adaptive_anchor` 기하) 우커브=오른선 소실, 좌커브=왼선 소실.
+> 기준선을 왼선으로 고정해도 좌커브에서 `dropped:left:왼선없음`이 떠 **거울상으로 실패**했다.
+> → **어느 한쪽에 고정 앵커하는 설계는 S자에서 원리적으로 성립하지 않는다.**
+> 이제 기준선은 adaptive가 정하고(보이는 바깥선), `turn_bias`는 그 중심선에 **±offset**만
+> 얹는다 → 커브/직선·어느 선이 보이든 **항상 발동**(커브 게이트도 선 소실 폴백도 없음).
+>
+> 인지 동작(`lane_detect.py`, `lane.yaml sign_apply=offset`):
+> 1. `turn_bias`=LEFT/RIGHT → `force_side`='left'/'right'
+> 2. 중심선(adaptive/dual이 만든 것) 전체를 `∓sign_lane_offset_m`(0.09m=W/4) 평행이동
+>    = **팻말 옆 통로 중앙**. 부호: LEFT=`−`(좌), RIGHT=`+`(우). 팻말은 갈림길이 아니라
+>    **도로 한가운데 선 장애물**이라 offset 0(=도로 정중앙)은 정면충돌.
+> 3. 발동 실패는 '차선 자체 미검출'뿐 → `dropped:<side>:중심선없음`(팻말 이전에 주행이
+>    이미 실패한 상태).
+> 4. 아래 `sign_force_*` 커브 게이트와 `sign_curve_median_frames`는 **offset 모드에선
+>    미사용**(anchor로 되돌릴 때만 의미).
+> 5. 이 발동/포기는 07-16까지 **무로그였다** — 지시가 조용히 사라지니 좌/우 동일 증상을
+>    모델 탓으로 오진했다. 이제 `LaneResult.sign_force_status`(`applied:`/`gated:`/`dropped:`)로
+>    나오고 노드가 상태 변화 시 찍는다.
 
 판단이 각 상태에서 내보내는 지시(요약):
 
 | 상태 | follow | roi_mode | turn_bias |
 |---|---|---|---|
-| LANE_FOLLOW | WHITE | LOWER | - |
-| DYNAMIC_OBSTACLE_ZONE | WHITE | LOWER_ARUCO | - |
-| FINISH_APPROACH | WHITE | LOWER | - |
+| LANE_FOLLOW | WHITE | LOWER | NONE |
+| SIGN_BRANCH | WHITE | LOWER | **LEFT / RIGHT**(팻말 래치) |
+| DYNAMIC_OBSTACLE_ZONE | WHITE | LOWER_ARUCO | NONE |
+| FINISH_APPROACH | WHITE | LOWER | NONE |
 
 (WAIT_START_SIGNAL·FINISH_STOP = 정지.)
 

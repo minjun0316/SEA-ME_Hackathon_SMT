@@ -358,9 +358,12 @@ def main() -> int:
     print(f'red_h_frac (빨강 검출된 이미지): {quantiles(red_h_all)}')
     print(f'   임계 red_min_box_h_frac={cfg.red_min_box_h_frac or "off"}')
     if red_conf_gt:
-        below = sum(1 for c in red_conf_gt if 0 < c < 0.6)
         print(f'red conf (빨강 GT 이미지)   : {quantiles([c for c in red_conf_gt if c > 0])}')
-        print(f'   임계 red_min_conf={cfg.red_min_conf or "off"} → 0.6 미만 {below}장')
+        if cfg.red_min_conf > 0.0:
+            below = sum(1 for c in red_conf_gt if 0 < c < cfg.red_min_conf)
+            print(f'   임계 red_min_conf={cfg.red_min_conf} → 미만 {below}장(=게이트에 걸려 종료 못 함)')
+        else:
+            print('   임계 red_min_conf=off')
     print(f'sign_h_frac (팻말 GT 이미지) : {quantiles(sign_h_gt)}')
     print(f'   임계 sign_min_box_h_frac={cfg.sign_min_box_h_frac or "off"}')
     print(f'sign_aspect                 : {quantiles(sign_asp_gt)}')

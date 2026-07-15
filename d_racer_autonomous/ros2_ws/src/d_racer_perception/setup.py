@@ -47,6 +47,8 @@ setup(
             'yolo_detect_test_node = d_racer_perception.yolo_detect_test_node:main',
             'lane_detect_node = d_racer_perception.lane_detect_node:main',
             'mission_cues_node = d_racer_perception.mission_cues_node:main',
+            'yolo_debug_recorder_node = '
+            'd_racer_perception.yolo_debug_recorder_node:main',
         ],
     },
 )

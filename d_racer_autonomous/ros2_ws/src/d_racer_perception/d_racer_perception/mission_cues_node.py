@@ -181,12 +181,17 @@ class MissionCuesNode(Node):
         self.declare_parameter('yolo_stale_sec', 1.0)        # 이 시간 내 추론 없으면 신호 NONE.
         self.declare_parameter('tl_prefer_red', True)        # 초록·빨강 동시 → RED(출발 안전측).
         self.declare_parameter('tl_green_confirm_sec', 0.5)  # 초록 연속 확정 시간(오출발 방지).
-        # [07-15] 빨강 연속 확정 시간(초록과 대칭). 빨강은 그동안 '확정 없이 즉시' 발행돼
-        # 오검출 한 번이 코스를 끝냈다. 판단측 red_confirm_count(연속 N개)로는 못 막는다 —
-        # 이 노드는 카메라 속도로 발행하면서 추론 결과를 yolo_stale_sec까지 재사용하므로,
-        # 추론 1번이 같은 값 수십 개로 재발행돼 'N연속'을 스스로 충족시켜 버리기 때문.
-        # 시간 기반 확정만이 재발행에 안 속는다. 종료가 늦으면 ↓, 오종료면 ↑.
-        self.declare_parameter('tl_red_confirm_sec', 0.5)
+        # [07-15] 빨강 확정: 오검출 한 번이 코스를 끝내지 않도록 증거를 N번 모은다.
+        # ⚠ 판단측 red_confirm_count(연속 N개)로는 못 막는다 — 이 노드는 카메라 속도로
+        # 발행하면서 추론 결과를 yolo_stale_sec까지 재사용하므로, 추론 1번이 같은 값 수십
+        # 개로 재발행돼 'N연속'을 스스로 충족시켜 버리기 때문. 여기서 세는 건 **추론 프레임**
+        # (아래 `if due:` 안에서만 증가)이라 재발행에 안 속는다 — 판단측 카운트와 다른 축이다.
+        # [07-15c] tl_red_confirm_sec(0.2s) → 프레임 수. 시간 기준이 실효 추론 간격과 정확히
+        # 같아 경계에 걸려 있었다: 추론 due 검사가 카메라 프레임에서만 일어나 20Hz 격자에
+        # 양자화되고(0.15s는 1/6s 미달 → 다음 0.2s에 추론) 실효 5Hz = span 0.2000s vs 임계
+        # 0.2 → 지터 1ms에 2프레임(0.2s)이냐 3프레임(0.4s)이냐가 갈렸다. 프레임 수는 추론
+        # 주기가 변해도(카메라 fps·CPU 부하) 증거량이 일정하다. 종료가 늦으면 ↓, 오종료면 ↑.
+        self.declare_parameter('tl_red_confirm_frames', 2)
         # 빨강 깜빡임 허용 간격. 비-빨강 프레임이 끼어도 이 시간 안에 빨강이 다시 보이면
         # 같은 빨강 구간으로 이어 붙여 확정 타이머를 유지한다(모델이 빨강↔초록을 깜빡임).
         self.declare_parameter('tl_red_gap_sec', 0.5)
@@ -201,6 +206,7 @@ class MissionCuesNode(Node):
         # 지시하는 것 방지. 로그의 h=/asp= 실측치를 보고 임계를 잡는다.
         self.declare_parameter('sign_min_box_h_frac', _tc.sign_min_box_h_frac)
         self.declare_parameter('sign_min_box_aspect', _tc.sign_min_box_aspect)
+        self.declare_parameter('sign_min_conf', _tc.sign_min_conf)
         # 빨강 전용 게이트(초록엔 미적용). 빨강 오검출이 코스를 조기종료시킬 때 켠다.
         self.declare_parameter('red_min_box_h_frac', _tc.red_min_box_h_frac)
         self.declare_parameter('red_min_conf', _tc.red_min_conf)
@@ -223,7 +229,7 @@ class MissionCuesNode(Node):
         self.yolo_enable = bool(self.get_parameter('yolo_enable').value)
         self.yolo_stale_sec = float(self.get_parameter('yolo_stale_sec').value)
         self.tl_green_confirm_sec = float(self.get_parameter('tl_green_confirm_sec').value)
-        self.tl_red_confirm_sec = float(self.get_parameter('tl_red_confirm_sec').value)
+        self.tl_red_confirm_frames = int(self.get_parameter('tl_red_confirm_frames').value)
         self.tl_red_gap_sec = float(self.get_parameter('tl_red_gap_sec').value)
         self.checker_hold_sec = float(self.get_parameter('checker_hold_sec').value)
         _yolo_hz = float(self.get_parameter('yolo_max_infer_hz').value)
@@ -247,6 +253,8 @@ class MissionCuesNode(Node):
                         self.get_parameter('sign_min_box_h_frac').value),
                     sign_min_box_aspect=float(
                         self.get_parameter('sign_min_box_aspect').value),
+                    sign_min_conf=float(
+                        self.get_parameter('sign_min_conf').value),
                     red_min_box_h_frac=float(
                         self.get_parameter('red_min_box_h_frac').value),
                     red_min_conf=float(
@@ -258,7 +266,9 @@ class MissionCuesNode(Node):
                 self.get_logger().info(
                     f'YOLO 미션신호 ON: model={_model_path} conf={_tcfg.conf} '
                     f'imgsz={_tcfg.imgsz} max_hz={_yolo_hz} prefer_red={_tcfg.prefer_red} '
-                    f'green_confirm={self.tl_green_confirm_sec}s stale={self.yolo_stale_sec}s')
+                    f'green_confirm={self.tl_green_confirm_sec}s '
+                    f'red_confirm={self.tl_red_confirm_frames}프레임(gap {self.tl_red_gap_sec}s) '
+                    f'red_min_conf={_tcfg.red_min_conf} stale={self.yolo_stale_sec}s')
             except Exception as e:  # noqa: BLE001 - 모델/torch 미비 시 aruco만 계속.
                 self.tl_detector = None
                 self.get_logger().warn(
@@ -343,7 +353,7 @@ class MissionCuesNode(Node):
         self._yolo_result_time: Time | None = None   ##< 마지막 추론 결과 시각(stale 판정).
         self._tl_raw_light = TL_NONE                  ##< 마지막 추론 프레임단위 신호.
         self._green_since: Time | None = None         ##< 초록 연속 시작 시각(확정용).
-        self._red_since: Time | None = None           ##< 빨강 '구간' 시작 시각(확정용, 초록과 대칭).
+        self._red_count = 0                           ##< 현 빨강 '구간'에서 본 빨강 추론 횟수(확정용).
         self._red_last_seen: Time | None = None       ##< 마지막 빨강 프레임 시각(tl_red_gap_sec 이어붙이기용).
         self._checker_seen_time: Time | None = None   ##< 체커보드 마지막 검출 시각(hold).
         # 팻말 방향 시간 상태(스로틀·stale).
@@ -412,13 +422,12 @@ class MissionCuesNode(Node):
                     # 연속 확정이 매번 리셋 → 마지막 빨강을 놓쳤다. tl_red_gap_sec 이내에
                     # 빨강이 다시 보이면 같은 구간으로 이어 붙이고, 그보다 오래 끊겨야 구간 종료.
                     if det.light == TL_RED:
-                        if self._red_since is None:
-                            self._red_since = now          # 새 빨강 구간 시작.
+                        self._red_count += 1               # 구간 내 빨강 추론 1표 누적.
                         self._red_last_seen = now
                     elif (self._red_last_seen is not None
                           and (now - self._red_last_seen).nanoseconds * 1e-9
                           > self.tl_red_gap_sec):
-                        self._red_since = None             # gap 초과로 끊김 → 구간 종료.
+                        self._red_count = 0                # gap 초과로 끊김 → 구간 종료.
                         self._red_last_seen = None
                 # 방향팻말: sign_gate ON(SIGN_BRANCH) 일 때만 소비.
                 if self._sign_gate:
@@ -452,6 +461,8 @@ class MissionCuesNode(Node):
                     # 빨강 게이트 튜닝: red_h=빨강 박스높이비(거리).
                     f' red_h={det.red_h_frac:.3f}'
                     f'{" [RED-GATED]" if det.red_gated else ""}'
+                    # 빨강 확정 진행도: 이 구간에서 본 빨강 추론 횟수/임계. 임계 도달=TL_RED.
+                    f' red={self._red_count}/{self.tl_red_confirm_frames}'
                     # 방향 투표 누적점수: 접근 구간 전체 증거. 큰 쪽이 최종 방향.
                     f' vote(L={self._sign_left_score:.1f} R={self._sign_right_score:.1f})',
                     throttle_duration_sec=1.0)
@@ -507,7 +518,7 @@ class MissionCuesNode(Node):
             # OFF 전이 시 초록 확정 타이머를 접어 재점화 후 stale 신호가 안 남게 한다.
             if not gate:
                 self._green_since = None
-                self._red_since = None
+                self._red_count = 0
                 self._red_last_seen = None   # 구간 추적도 같이 접어야 재점화 후 즉시 확정 안 됨.
         self._yolo_gate = gate
 
@@ -524,8 +535,8 @@ class MissionCuesNode(Node):
         @details 추론이 stale(오래됨)하거나 없으면 NONE/false로 폴백(끊긴 프레임에 붙들려
         가짜 신호 유지 방지). 초록은 tl_green_confirm_sec 동안 **연속**돼야 TL_GREEN을 낸다
         (한 프레임 가짜 초록 오출발 방지) — 확정 전엔 NONE(대기).
-        빨강은 tl_red_confirm_sec 동안 지속돼야 TL_RED. 단 '지속'의 판정에 raw 신호를 쓰지
-        않고 _red_last_seen(gap 이내 빨강을 봤는가)을 쓴다 — 깜빡임으로 raw가 한 프레임
+        빨강은 한 구간에서 tl_red_confirm_frames번 이상 '보여야' TL_RED. 단 판정에 raw 신호를
+        쓰지 않고 _red_last_seen(gap 이내 빨강을 봤는가)을 쓴다 — 깜빡임으로 raw가 한 프레임
         GREEN이 돼도 구간이 유지돼야 하기 때문(raw로 게이트하면 gap 이어붙이기가 무의미해짐).
         체커보드는 hold로 잠깐 놓쳐도 유지. @return (traffic_light, checkerboard_detected).
         """
@@ -538,12 +549,9 @@ class MissionCuesNode(Node):
         # 빨강을 gap 이내에 봤는가(깜빡임 허용). raw가 지금 초록이어도 구간은 살아 있다.
         red_recent = (self._red_last_seen is not None and
                       (now - self._red_last_seen).nanoseconds * 1e-9 <= self.tl_red_gap_sec)
-        # 확정은 '첫 빨강~마지막 빨강'의 실제 지속(span)으로 잰다. now 기준으로 재면 안 된다:
-        # gap(0.5s) > confirm(0.2s)이라 **단발 오검출 한 프레임**도 gap이 만료되기 전까지
-        # 타이머가 혼자 흘러 confirm을 채워 코스를 끝내버린다(span이면 단발은 0이라 안전).
-        red_span = (0.0 if (self._red_since is None or self._red_last_seen is None)
-                    else (self._red_last_seen - self._red_since).nanoseconds * 1e-9)
-        if red_recent and red_span >= self.tl_red_confirm_sec:
+        # 확정은 '실제로 빨강을 본 추론 횟수'로 센다. 시계가 아니라 증거를 세므로 단발 오검출은
+        # 영원히 1에 머문다 — 시간 기준일 때처럼 타이머가 혼자 흘러 확정에 도달할 길이 없다.
+        if red_recent and self._red_count >= self.tl_red_confirm_frames:
             light = MissionCues.TL_RED
         elif (self._tl_raw_light == TL_GREEN and self._green_since is not None and
               (now - self._green_since).nanoseconds * 1e-9 >= self.tl_green_confirm_sec):

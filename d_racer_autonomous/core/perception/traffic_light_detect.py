@@ -62,6 +62,11 @@ class TrafficCueConfig:
     # 신호등(green/red)에는 적용 안 함(멀리서 봐야 출발 판단 가능).
     sign_min_box_h_frac: float = 0.0      ##< 팻말 박스 높이/프레임높이 하한(=거리 게이트). 0=off. 멀수록 작아짐.
     sign_min_box_aspect: float = 0.0      ##< 팻말 박스 가로/세로(w/h) 하한(=각도 게이트). 0=off. 비스듬할수록 납작(작아짐).
+    # --- 팻말 신뢰도 게이트 (07-15) ---
+    # 좌/우 오판 하나가 갈림길을 반대로 타게 하므로, 방향은 '확실할 때만' 인정한다.
+    # 판단(SIGN_BRANCH)의 진입 트리거가 이제 sign_direction 자체라 이 게이트가 곧 진입
+    # 조건이다 — MissionCues에 conf 필드를 두지 않고 여기서 걸러 계약을 유지한다.
+    sign_min_conf: float = 0.0            ##< 팻말 방향 인정 최소 신뢰도(0=off → 전역 conf 사용). 좌/우 오판 방지.
     # --- 빨간불 게이트 (07-15) ---
     # 빨강 오검출 하나가 코스를 끝내버려(red_confirm_count=1, 즉시정지) 방어가 필요하다.
     # 종료 신호등은 '가까이서' 보므로 거리(박스 크기)·신뢰도로 거른다.
@@ -160,7 +165,7 @@ class TrafficLightDetector:
                         continue
                     red_conf = max(red_conf, cf)
                 elif c in (self.cfg.class_left, self.cfg.class_right):
-                    # 팻말: 거리(박스 높이)·각도(w/h) 게이트를 통과한 박스만 방향으로 인정.
+                    # 팻말: 거리(박스 높이)·각도(w/h)·신뢰도 게이트를 통과한 박스만 방향으로 인정.
                     x1, y1, x2, y2 = (float(v) for v in xyxy_t)
                     bw = max(0.0, x2 - x1)
                     bh = max(0.0, y2 - y1)
@@ -172,8 +177,10 @@ class TrafficLightDetector:
                                and h_frac < self.cfg.sign_min_box_h_frac)
                     too_skew = (self.cfg.sign_min_box_aspect > 0.0
                                 and aspect < self.cfg.sign_min_box_aspect)
-                    if too_far or too_skew:
-                        sign_gated = True         # 멀거나 비스듬 → 방향으로 안 씀.
+                    too_weak = (self.cfg.sign_min_conf > 0.0
+                                and cf < self.cfg.sign_min_conf)
+                    if too_far or too_skew or too_weak:
+                        sign_gated = True         # 멀거나 비스듬하거나 애매 → 방향으로 안 씀.
                         continue
                     if c == self.cfg.class_left:
                         left_conf = max(left_conf, cf)

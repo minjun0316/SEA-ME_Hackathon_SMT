@@ -128,6 +128,7 @@ class LaneDetectNode(Node):
         self.declare_parameter('curve_dx_deadband_px', d.curve_dx_deadband_px)
         self.declare_parameter('sign_force_max_curve_px', d.sign_force_max_curve_px)
         self.declare_parameter('sign_force_straight_frames', d.sign_force_straight_frames)
+        self.declare_parameter('sign_curve_median_frames', d.sign_curve_median_frames)
         self.declare_parameter('sign_apply', d.sign_apply)
         self.declare_parameter('perp_offset', d.perp_offset)
         self.declare_parameter('perp_max_slope', d.perp_max_slope)
@@ -191,6 +192,8 @@ class LaneDetectNode(Node):
                 self.get_parameter('sign_force_max_curve_px').value),
             sign_force_straight_frames=int(
                 self.get_parameter('sign_force_straight_frames').value),
+            sign_curve_median_frames=int(
+                self.get_parameter('sign_curve_median_frames').value),
             sign_apply=str(self.get_parameter('sign_apply').value),
             perp_offset=bool(self.get_parameter('perp_offset').value),
             perp_max_slope=float(self.get_parameter('perp_max_slope').value),
@@ -293,6 +296,16 @@ class LaneDetectNode(Node):
                 f'rows={res.stopline_n_band} '
                 f'min_rows={self.get_parameter("stopline_min_rows").value}')
         self._prev_stopline = bool(s.stop_line)
+        # 팻말 강제 anchor 결과. 발동/보류/포기가 **전부 무로그**여서, 지시가 마지막
+        # 단계에서 조용히 버려지는데도(좌/우 팻말이 똑같이 왼쪽으로 감) 원인을 모델
+        # 탓으로 오진했다. 상태가 바뀌는 순간만 찍어 스팸 없이 추적한다.
+        _sfs = str(res.sign_force_status)
+        if _sfs != getattr(self, '_prev_sign_force', ''):
+            if _sfs.startswith('applied'):
+                self.get_logger().info(f'팻말 anchor {_sfs} (왼선 기준 ±offset)')
+            elif _sfs:
+                self.get_logger().warn(f'팻말 anchor 미적용: {_sfs}')
+            self._prev_sign_force = _sfs
         # 주의: LaneStatus msg엔 yellow/white_detected 필드가 없다(슬림화됨). 여기서
         # s.yellow_detected 등을 set하면 AttributeError로 노드가 죽는다 → set 금지.
         self.pub_status.publish(s)

@@ -136,6 +136,19 @@ class LaneCalib:
     # 피팅이 2차라 S자를 표현 못 함). → '직선이 이만큼 연속'돼야 팻말을 허용한다.
     # 변곡점의 찰나 직선은 이 수를 못 채워 막히고, 진짜 직선 접근로는 채워서 통과한다.
     sign_force_straight_frames: int = 15  ##< 팻말 강제 허용에 필요한 연속 직선 프레임(~0.75s@20fps).
+    # [07-16 실차] 위 두 게이트를 **노이즈가 무력화**했다. curve_dx = 피팅선의 far−near라
+    # BEV 원거리 끝점 흔들림을 그대로 먹어, 실측 로그에서 50ms 간격으로 +45 → −49로 부호가
+    # 뒤집혔다(차가 그 속도로 커브를 바꿀 리 없다 = 순수 노이즈). |노이즈| 최대 62 > 임계 18
+    # 이라 연속 직선 카운터가 계속 0으로 리셋 → 팻말이 **한 프레임만** 발동하고 무너졌다.
+    # 그 로그의 중앙값은 +3.5 = 차는 실제로 직선 위에 있었다. → 게이트 판정 전에 중앙값
+    # 필터를 먹인다. 임계를 올리는 건 답이 아니다(65+가 필요 = 게이트를 없애는 것과 같음).
+    # 창 크기는 그 로그를 재생해 정했다(scratchpad/verify_median_gate.py): 노이즈 std가
+    # ~30px이라 5로는 롤링 중앙값이 아직 출렁여 4/22프레임만 발동했다. **7이면 12/22가
+    # 연속(0.6s@20fps)으로 발동**하고, 진짜 커브(dx 30~52 연속)는 그대로 0/22로 막힌다.
+    # 임계 18은 손대지 않는다(25로 올리면 dx≈20인 완만한 진짜 커브가 새 나간다).
+    # 지연은 (N-1)/2 = 3프레임(0.15s@20fps)뿐이라 판독/발동 분리는 유지된다.
+    # 1 또는 0 = 필터 끔(옛 동작). 커브를 놓치면 ↓(5), 노이즈가 여전히 새면 ↑(9~11).
+    sign_curve_median_frames: int = 7     ##< curve_dx 중앙값 필터 창(프레임). 1=끔.
     # 팻말 적용 방식(07-15). 실트랙은 팻말로 이어지는 접근로가 '커브'라, anchor 교체
     # 방식은 커브 기하학을 파괴해 추종이 깨지고(강제하면) / 직선 게이트에 막혀 영영
     # 발동을 못 해(안 하면) 팻말을 들이받았다 — 커브 접근로에선 양립 불가.
@@ -200,6 +213,10 @@ class LaneResult:
     stopline_n_band: int = 0       ##< 커버리지 임계 넘은 행수. min_rows 임계와 비교.
     white_detected: bool = False
     white_confidence: float = 0.0
+    # 팻말 강제 anchor 결과(계약 밖, 튜닝용). ''=지시 없음, 'applied:<side>',
+    # 'gated:<side>:curve(...)'=커브 게이트가 보류, 'dropped:<side>:...'=앵커가 없어 포기.
+    # 무증상 폴백을 눈에 보이게 하는 용도 — 노드가 그대로 로그로 찍는다.
+    sign_force_status: str = ''
     # lane_path: (x,y) 미터, base_link, near→far
     lane_path: List[Tuple[float, float]] = field(default_factory=list)
     debug_image: Optional[np.ndarray] = None
@@ -229,6 +246,8 @@ class LaneDetector:
         self._adapt_age = 999        ##< 적응형 anchor 마지막 검출 이후 프레임.
         self._adapt_side = None      ##< _adapt_fit이 어느 쪽 선인지('left'|'right'). coast 오염 방지.
         self._straight_frames = 0    ##< 연속 '직선' 프레임 수(팻말 강제 허용 판정용).
+        self._curve_dx_hist: List[float] = []  ##< curve_dx 최근값(중앙값 필터용, 검출된 것만).
+        self.sign_force_status = ''  ##< 직전 프레임 팻말 강제 결과(LaneResult로 전달·로그).
 
     # ------------------------------------------------------------------ #
     def detect(self, frame: np.ndarray, want_debug: bool = False,
@@ -282,14 +301,21 @@ class LaneDetector:
             edges, debug,
             force_side=(None if _offset_mode else force_side),
             sign_offset_px=sign_offset_px)
+        res.sign_force_status = self.sign_force_status   # 강제 발동/보류/포기 사유(로그용).
 
         # 팻말 offset: 기하학이 만든 중심선을 팻말 반대쪽(=지시된 통로 쪽)으로 평행이동.
         # 팻말이 도로 정중앙에 선 장애물이라, 중심선 그대로면 정면충돌 → 옆 통로로 민다.
         # 커브/직선 무관하게 안전(추종 로직 자체는 손대지 않으므로).
-        if (_offset_mode and force_side in ('left', 'right')
-                and centerline_px and sign_offset_px):
-            _dx = float(sign_offset_px) * (1.0 if force_side == 'right' else -1.0)
-            centerline_px = [(cx + _dx, cy) for (cx, cy) in centerline_px]
+        if _offset_mode and force_side in ('left', 'right'):
+            if centerline_px and sign_offset_px:
+                _dx = float(sign_offset_px) * (1.0 if force_side == 'right' else -1.0)
+                centerline_px = [(cx + _dx, cy) for (cx, cy) in centerline_px]
+                # anchor 방식과 달리 여기엔 게이트도 '지시된 쪽 선 소실'도 없다 —
+                # 차선이 잡히기만 하면 항상 발동한다. 그래도 로그는 남긴다(관측성 유지).
+                res.sign_force_status = f'applied:{force_side}(offset {_dx:+.0f}px)'
+            else:
+                # 중심선 자체가 없음(차선 미검출) = 팻말 이전에 주행이 이미 실패한 상태.
+                res.sign_force_status = f'dropped:{force_side}:중심선없음(차선 미검출)'
         res.confidence = confidence
         res.lane_detected = len(centerline_px) >= 2 and confidence > 0.0
 
@@ -501,6 +527,7 @@ class LaneDetector:
         """
         c = self.calib
         side = 'left' if use_left else 'right'
+        anchor_side = side
         if anchor_ok:
             self._adapt_fit = anchor_line              # 실검출 → 갱신
             self._adapt_age = 0
@@ -508,17 +535,23 @@ class LaneDetector:
             n_side = sum(lfound if use_left else rfound)
             conf = n_side / float(c.nwindows)
             anchor = anchor_line
-        elif (self._adapt_fit is not None and self._adapt_side == side
+        elif (self._adapt_fit is not None
               and self._adapt_age < c.anchor_hold_frames):
-            anchor = self._adapt_fit                   # 소실: 같은 쪽 직전 anchor 유지(coast)
+            # 소실: 직전 anchor 유지(coast). 측이 방금 바뀌었어도(W자 변곡점에서
+            # curve_dx 부호 반전) 반대쪽 fit을 **그 fit의 측 기준으로** 복원해 쓴다.
+            # 좌/우 anchor 모두 같은 차선중심을 가리키므로 기하는 그대로 유효하고,
+            # 새 쪽이 잡힐 때까지 중심선이 midpoint로 스냅되는 계단이 생기지 않는다.
+            anchor = self._adapt_fit
+            anchor_side = self._adapt_side
             self._adapt_age += 1
             conf = max(c.seed_lock_conf, self._last_conf * 0.9)
         else:
-            anchor = None                              # 완전 소실/반대쪽 fit뿐 → 직진 폴백
+            anchor = None                              # 완전 소실 → 직진 폴백
             conf = 0.0
         if anchor is not None:
             half = lane_w / 2.0
-            sign = 1.0 if use_left else -1.0
+            anchor_is_left = (anchor_side == 'left')   # coast 시 요청 측과 다를 수 있음
+            sign = 1.0 if anchor_is_left else -1.0
             if c.perp_offset:
                 slope = np.gradient(anchor, cys_arr)   # dx/dy(row별)
                 slope = np.clip(slope, -c.perp_max_slope, c.perp_max_slope)
@@ -528,7 +561,7 @@ class LaneDetector:
             cxs = anchor + sign * half * scale + extra_offset_px
             centerline = [(float(cxs[i]), cys[i]) for i in range(c.nwindows)]
             near = float(anchor[0])
-            if use_left:
+            if anchor_is_left:
                 self._last_leftx, self._last_rightx = near, near + lane_w
             else:
                 self._last_rightx, self._last_leftx = near, near - lane_w
@@ -654,14 +687,26 @@ class LaneDetector:
         else:
             lane_w = float(c.lane_width_px)   # 학습 off: 항상 고정값(표류 없음)
 
-        # --- 강제 anchor(팻말 지시): 커브감지·dual·single_anchor 전부 무시하고 그 쪽만 ---
-        # 판단이 방향 팻말(좌/우)을 래치해 force_side로 내려주면, 그 방향 차선을 강제
-        # 추종하고 팻말 방향으로 sign_offset_px만큼 더 붙인다(offset 부호=왼선 −, 오른선 +).
+        # --- 강제 anchor(팻말 지시): 커브감지·dual·single_anchor 전부 무시하고 왼선 기준 ---
+        # 판단이 방향 팻말(좌/우)을 래치해 force_side로 내려주면, **왼선 하나를 기준선으로**
+        # 중심선 = 왼선 + W/2 ± sign_offset_px 를 만든다(−=왼쪽 통로, +=오른쪽 통로).
         # 팻말이 풀리면(force_side=None) 아래 adaptive/single 자동 로직으로 복귀한다.
         # --- 커브/직선 판정 + 연속 직선 카운터(팻말 강제 게이트용) ---
         # 매 프레임 갱신한다(팻말 유무와 무관). 커브면 카운터를 0으로 리셋하므로,
         # S자 변곡점처럼 '찰나만 직선'인 구간은 카운터가 못 쌓여 팻말이 차단된다.
-        curve_dx = self._curve_dx(left_line, right_line, left_ok, right_ok)
+        self.sign_force_status = ''                    # 이번 프레임 팻말 강제 결과(노드가 로그).
+        curve_dx_raw = self._curve_dx(left_line, right_line, left_ok, right_ok)
+        # 중앙값 필터: 원거리 끝점 노이즈(부호까지 뒤집힘)를 걸러 '진짜 커브'만 남긴다.
+        # 검출된 값만 쌓는다 — 미검출(None)을 0으로 채우면 '직선'을 지어내는 셈이라
+        # 차선이 안 보이는 커브가 직선으로 둔갑한다. None은 옛 동작대로 '판단 불가'.
+        if curve_dx_raw is None:
+            curve_dx = None
+        else:
+            n = max(1, int(c.sign_curve_median_frames))
+            self._curve_dx_hist.append(float(curve_dx_raw))
+            if len(self._curve_dx_hist) > n:
+                del self._curve_dx_hist[:-n]           # 최근 n개만 유지
+            curve_dx = float(np.median(self._curve_dx_hist))
         if curve_dx is not None and abs(curve_dx) > c.sign_force_max_curve_px:
             self._straight_frames = 0                  # 커브 → 리셋
         else:
@@ -672,25 +717,40 @@ class LaneDetector:
             # 커브 중이거나, 변곡점처럼 직선이 잠깐뿐이면 → 기하학(adaptive) 추종 유지.
             if (c.sign_force_max_curve_px > 0.0
                     and self._straight_frames < c.sign_force_straight_frames):
+                _dx = 'None' if curve_dx is None else f'{curve_dx:.0f}'
+                _raw = 'None' if curve_dx_raw is None else f'{curve_dx_raw:.0f}'
+                self.sign_force_status = (          # dx=중앙값(게이트가 보는 값), raw=원본.
+                    f'gated:{force_side}:curve(dx={_dx}/{c.sign_force_max_curve_px:.0f} '
+                    f'raw={_raw} straight={self._straight_frames}/'
+                    f'{c.sign_force_straight_frames})')
                 force_side = None                      # 아직 직선 확정 아님 → 자동 로직으로.
 
         if force_side in ('left', 'right'):
-            use_left = (force_side == 'left')
-            anchor_line = left_line if use_left else right_line
-            anchor_ok = left_ok if use_left else right_ok
-            # 지시된 쪽 차선이 이번 프레임에 없고 같은 쪽 coast도 만료면, 강제를 포기하고
-            # 아래 자동(adaptive/dual)으로 폴백한다. 그대로 강제하면 conf=0(미검출)이 나가
-            # 판단이 LOST→정지해 버린다(팻말을 멀리서 잡으면 그 구간엔 아직 그 차선이
-            # 안 보여 차가 서는 실패모드). 없는 차선을 좇느니 평소 주행을 유지하는 게 안전.
+            # [07-16] 좌/우 **둘 다 왼선 앵커**. 예전엔 지시된 쪽 선을 그대로 앵커로 썼는데,
+            # 오른쪽 분기가 필요한 바로 그 지점(S자 끝 = 우커브)에서 영영 발동하지 못했다:
+            # 우커브에선 '안쪽'인 오른선이 BEV 밖으로 먼저 빠지고(아래 adaptive 기하 주석
+            # 참조) right_ok=False, coast는 _adapt_side가 'left'(adaptive가 우커브에서
+            # 바깥=왼선을 잡으니까)라 조건 불일치로 안 걸린다 → 강제 포기 → adaptive
+            # (왼선, offset 0) = 도로 정중앙 = 팻말 정면. **좌/우 팻말이 똑같이 왼쪽으로
+            # 가던 원인이 이것**이다. 보이는 선 하나로 양방향을 표현하면 이 비대칭
+            # (coast 래치 편향 + 안쪽선 소실)이 통째로 사라진다.
+            anchor_line, anchor_ok = left_line, left_ok
             can_coast = (self._adapt_fit is not None
-                         and self._adapt_side == force_side
+                         and self._adapt_side == 'left'
                          and self._adapt_age < c.anchor_hold_frames)
             if anchor_ok or can_coast:
-                self._lane_mode = force_side           # 모니터/일관성용 모드 반영
-                extra = (-1.0 if use_left else 1.0) * float(sign_offset_px)
+                self._lane_mode = 'left'               # 모니터/일관성용 모드 반영
+                # 왼선 기준이므로 부호는 '팻말의 어느 쪽 통로냐'로 갈린다(오른선 앵커 시절의
+                # use_left 부호가 아니다): 왼쪽 통로=−(왼선 쪽), 오른쪽 통로=+(반대편).
+                extra = (-1.0 if force_side == 'left' else 1.0) * float(sign_offset_px)
+                self.sign_force_status = f'applied:{force_side}'
                 return self._anchor_centerline(
-                    use_left, anchor_line, anchor_ok, lane_w, cys, cys_arr,
+                    True, anchor_line, anchor_ok, lane_w, cys, cys_arr,
                     lfound, rfound, midpoint, leftx, rightx, extra_offset_px=extra)
+            # 왼선마저 없고 coast도 만료 → 강제 포기(없는 선을 좇으면 conf=0 → 판단
+            # LOST → 정지). 단 **조용히 버리지 않는다**: 이 무증상 폴백이 좌/우 동일
+            # 증상을 모델 탓으로 오진하게 만든 장본인이라 사유를 남겨 노드가 찍는다.
+            self.sign_force_status = f'dropped:{force_side}:왼선없음(coast만료)'
 
         # --- 단일 기준선 고정 추종(single_anchor): 오른선 하나만, 붕괴/정체성 우회 ---
         if c.single_anchor:
