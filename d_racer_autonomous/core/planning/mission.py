@@ -135,6 +135,7 @@ class MissionSequencer:
         self._phase_time = 0.0        ##< 현재 페이즈 지속시간[s].
         self._red_quiet_time = 0.0    ##< 빨강을 마지막으로 본 뒤 흐른 시간[s](FINISH_STOP 해제용).
         self._sign_quiet_time = 0.0   ##< 팻말을 마지막으로 본 뒤 흐른 시간[s](SIGN_BRANCH 해제용).
+        self._sign_ramp_time = None   ##< 분기 종료 후 흐른 시간[s]. None=램프 비활성(평시).
         self._yolo_relatch = False    ##< 장애물구역서 아루코 최초검출 시 True(빨간불 종료까지 신호등 YOLO 재점화).
         self._sign_done = False       ##< 팻말 분기 완료 1회성 래치(재진입 방지).
         self._sign_dir = SignDirection.NONE  ##< SIGN_BRANCH서 래치한 좌/우(첫 non-NONE 유지).
@@ -164,6 +165,9 @@ class MissionSequencer:
             self._sign_quiet_time = 0.0
         else:
             self._sign_quiet_time += dt
+        # 분기 종료 후 속도 복귀 램프 타이머(활성일 때만).
+        if self._sign_ramp_time is not None:
+            self._sign_ramp_time += dt
         self._advance_phase(obs)
         self._latch_sign_direction(obs)
         cmd = self._command(obs, dt)
@@ -242,9 +246,11 @@ class MissionSequencer:
             elif (self.cfg.sign_lost_release_sec > 0.0
                   and self._sign_quiet_time >= self.cfg.sign_lost_release_sec):
                 self._sign_done = True
+                self._sign_ramp_time = 0.0        # 속도 계단 방지(합류 구간 안정).
                 self._set_phase(MissionPhase.LANE_FOLLOW)
             elif self._phase_time >= self.cfg.sign_branch_duration:
                 self._sign_done = True
+                self._sign_ramp_time = 0.0
                 self._set_phase(MissionPhase.LANE_FOLLOW)
 
         elif p == MissionPhase.OBSTACLE_ZONE:
@@ -309,6 +315,17 @@ class MissionSequencer:
             # 제어는 평소 차선추종 그대로 둔다. 오픈루프가 아니라 폐루프라 속도·배터리·
             # 노면에 안 흔들린다. 감속만 여기서 얹는다.
             cmd.speed_scale = min(cmd.speed_scale, self.cfg.sign_branch_speed_scale)
+        elif p == MissionPhase.LANE_FOLLOW and self._sign_ramp_time is not None:
+            # 분기 종료 직후: 분기 감속값 → 1.0으로 선형 복귀(계단 금지).
+            # 계단이면 스로틀이 문턱 위 26µs → 85µs로 3배 넘게 뛰는데(데드밴드 바로 위의
+            # 가파른 구간), 하필 거기가 갈래가 다시 합쳐지는 구간이라 제어가 무너졌다.
+            r = self.cfg.sign_exit_ramp_sec
+            if r <= 0.0 or self._sign_ramp_time >= r:
+                self._sign_ramp_time = None       # 램프 종료 → 평시 복귀
+            else:
+                s0 = self.cfg.sign_branch_speed_scale
+                frac = self._sign_ramp_time / r
+                cmd.speed_scale = min(cmd.speed_scale, s0 + (1.0 - s0) * frac)
         elif p == MissionPhase.OBSTACLE_ZONE:
             cmd.speed_scale = min(cmd.speed_scale, self.cfg.slow_speed_scale)
         return cmd

@@ -30,7 +30,14 @@ decision:
   stopline_heading_gate: 0.40  # 커브 게이트[rad]: |heading_error|가 이 값 이상이면(=커브 중) 정지선 무시. 커브서 가로로 눕는 차선 오인 차단(검출단 폭 하한과 겹치는 안전망). heading_slow(0.35)보다 약간 크게 0.40(~23°). 직진 접근 정지선은 heading 작아 통과. 0=게이트 없음.
 
   # --- 상태별 출력 배율 ---
-  drive_speed_scale: 1.0   # DRIVE 속도 배율.
-  slow_speed_scale: 0.9    # SLOW 속도 배율. (0.5→0.9: 저속주행 시 SLOW 반토막이
-                           #  모터 breakaway 0.16 아래로 떨어지는 문제 회피. 원복=0.5)
+  # [07-15] 직선(DRIVE)에서 개루프 상수 스로틀이 터미널 속도까지 계속 가속 →
+  # 커브 진입 시 횡루프가 못 따라감(제어 상실). 그래서 DRIVE도 1.0에서 내린다.
+  # drive_throttle:=0.05 기준 실효: DRIVE 0.045(=1594µs) / SLOW 0.040(=1592µs).
+  # ⚠ slow_speed_scale < drive_speed_scale 유지 필수 — 역전되면 커브서 가속하고
+  #   직선서 감속한다. (옛 slow=0.9는 drive=1.0 시절 값이라 그대로 두면 역전.)
+  drive_speed_scale: 0.9   # DRIVE 속도 배율.
+  slow_speed_scale: 0.8    # SLOW 속도 배율. (구 0.9: 저속주행 시 SLOW 반토막이
+                           #  모터 breakaway 0.16 아래로 떨어지는 문제 회피용이었으나,
+                           #  07-15 재캘리브(FWD_START_US 1650→1575, drive_throttle
+                           #  0.16→0.04)로 전제가 사라짐. 0.8×0.05=1592µs > 문턱 1575µs.)
   slow_lookahead_scale: 0.8 # SLOW lookahead 배율(코너서 가까이).
