@@ -48,6 +48,7 @@ from .decision import (
     DecisionMaker,
     DriveCommand,
     DriveState,
+    GainProfile,
     LaneColor,
     LaneObservation,
     RoiMode,
@@ -135,7 +136,8 @@ class MissionSequencer:
         self._phase_time = 0.0        ##< 현재 페이즈 지속시간[s].
         self._red_quiet_time = 0.0    ##< 빨강을 마지막으로 본 뒤 흐른 시간[s](FINISH_STOP 해제용).
         self._sign_quiet_time = 0.0   ##< 팻말을 마지막으로 본 뒤 흐른 시간[s](SIGN_BRANCH 해제용).
-        self._sign_ramp_time = None   ##< 분기 종료 후 흐른 시간[s]. None=램프 비활성(평시).
+        self._sign_ramp_time = None   ##< 분기 종료 후 **직선에서** 흐른 시간[s]. None=램프 비활성(평시).
+        self._sign_hold_time = 0.0    ##< 분기 종료 후 곡선 게이트에 붙들린 시간[s](폴백 상한 판정용).
         self._yolo_relatch = False    ##< 장애물구역서 아루코 최초검출 시 True(빨간불 종료까지 신호등 YOLO 재점화).
         self._sign_done = False       ##< 팻말 분기 완료 1회성 래치(재진입 방지).
         self._sign_dir = SignDirection.NONE  ##< SIGN_BRANCH서 래치한 좌/우(첫 non-NONE 유지).
@@ -165,9 +167,13 @@ class MissionSequencer:
             self._sign_quiet_time = 0.0
         else:
             self._sign_quiet_time += dt
-        # 분기 종료 후 속도 복귀 램프 타이머(활성일 때만).
+        # 분기 종료 후 속도 복귀 램프 타이머(활성일 때만). **곡선 게이트**: 차선이 편
+        # 동안만 흐르고, 합류 곡선 중엔 얼어 분기 속도를 유지한다(_exit_ramp_open 참조).
         if self._sign_ramp_time is not None:
-            self._sign_ramp_time += dt
+            if self._exit_ramp_open(obs):
+                self._sign_ramp_time += dt
+            else:
+                self._sign_hold_time += dt
         self._advance_phase(obs)
         self._latch_sign_direction(obs)
         cmd = self._command(obs, dt)
@@ -190,6 +196,30 @@ class MissionSequencer:
             self._yolo_relatch = True
         return (self._phase == MissionPhase.WAIT_START_SIGNAL
                 or self._yolo_relatch)
+
+    def _exit_ramp_open(self, obs: MissionObservation) -> bool:
+        """@brief 분기 종료 램프를 지금 흘려도 되는가(곡선 게이트).
+
+        @details 램프를 시계로만 돌리면 갈래가 다시 합쳐지는 **곡선을 언제 빠져나오는지**
+        모른다 — 통과 시점은 속도에, 그 속도는 배터리에 달렸다(sign_lost_release_sec이
+        고정 타이머를 버린 것과 같은 이유). 그래서 차선이 편 것(=|heading_error| 작음)을
+        신호로 쓴다: 곡선 중엔 램프를 얼려 분기 속도를 유지하고, 펴지면 그때부터 흘린다.
+
+        노이즈는 안전한 쪽으로 실패한다 — heading_error가 튀면 램프가 잠깐 멈출 뿐이고
+        그건 '조금 더 천천히 복귀'다. 그래서 여기엔 필터가 없다(curve_dx와 다른 점).
+        단 편향으로 계속 문턱 위에 머물면 영영 못 흘러 코스 끝까지 기어가므로
+        sign_exit_hold_max_sec를 폴백 상한으로 둔다. @return True=램프 진행.
+        """
+        gate = self.cfg.sign_exit_straight_rad
+        if gate <= 0.0:
+            return True                   # 게이트 끔 = 순수 시간 램프(옛 동작).
+        cap = self.cfg.sign_exit_hold_max_sec
+        if cap > 0.0 and self._sign_hold_time >= cap:
+            return True                   # 폴백: 곡선에 너무 오래 갇혔다 → 게이트 무시.
+        if not obs.lane.lane_detected:
+            return False                  # 미검출 시 heading_error=0(노드 watchdog) = '직선'
+            #                               으로 오독된다. 모르면 안 올린다(hold, cap이 보호).
+        return abs(obs.lane.heading_error) < gate
 
     def _sign_enable(self) -> bool:
         """@brief 방향 팻말 YOLO 게이트 — LANE_FOLLOW(팻말 탐색) + SIGN_BRANCH(방향 유지).
@@ -246,11 +276,11 @@ class MissionSequencer:
             elif (self.cfg.sign_lost_release_sec > 0.0
                   and self._sign_quiet_time >= self.cfg.sign_lost_release_sec):
                 self._sign_done = True
-                self._sign_ramp_time = 0.0        # 속도 계단 방지(합류 구간 안정).
+                self._start_exit_ramp()          # 속도 계단 방지(합류 구간 안정).
                 self._set_phase(MissionPhase.LANE_FOLLOW)
             elif self._phase_time >= self.cfg.sign_branch_duration:
                 self._sign_done = True
-                self._sign_ramp_time = 0.0
+                self._start_exit_ramp()
                 self._set_phase(MissionPhase.LANE_FOLLOW)
 
         elif p == MissionPhase.OBSTACLE_ZONE:
@@ -283,6 +313,11 @@ class MissionSequencer:
                     and self._red_quiet_time >= self.cfg.finish_stop_release_sec):
                 self._set_phase(MissionPhase.FINISH_WATCH)
 
+    def _start_exit_ramp(self) -> None:
+        """@brief 분기 종료 램프 시작(타이머 0에서, 곡선 게이트 hold도 리셋)."""
+        self._sign_ramp_time = 0.0
+        self._sign_hold_time = 0.0
+
     def _latch_sign_direction(self, obs: MissionObservation) -> None:
         """@brief SIGN_BRANCH 중 첫 non-NONE 팻말 방향을 래치(잠깐 NONE에도 안 풀림)."""
         if (self._phase == MissionPhase.SIGN_BRANCH
@@ -309,6 +344,7 @@ class MissionSequencer:
         cmd.follow_color = follow
         cmd.roi_mode = roi
         cmd.turn_hint = self._sign_turn_hint()
+        cmd.gain_profile = self._gain_profile()
 
         if p == MissionPhase.SIGN_BRANCH:
             # 07-15 밤: 고정 조향 bias 폐기 → **인지에 앵커 차선을 지시**(turn_hint)하고
@@ -319,6 +355,8 @@ class MissionSequencer:
             # 분기 종료 직후: 분기 감속값 → 1.0으로 선형 복귀(계단 금지).
             # 계단이면 스로틀이 문턱 위 26µs → 85µs로 3배 넘게 뛰는데(데드밴드 바로 위의
             # 가파른 구간), 하필 거기가 갈래가 다시 합쳐지는 구간이라 제어가 무너졌다.
+            # 타이머는 **직선에서만** 흐르므로(update의 곡선 게이트) 아래 frac은 '종료 후
+            # 흐른 시간'이 아니라 '차선이 편 뒤 흐른 시간'이다 = 합류 곡선을 다 덮는다.
             r = self.cfg.sign_exit_ramp_sec
             if r <= 0.0 or self._sign_ramp_time >= r:
                 self._sign_ramp_time = None       # 램프 종료 → 평시 복귀
@@ -329,6 +367,24 @@ class MissionSequencer:
         elif p == MissionPhase.OBSTACLE_ZONE:
             cmd.speed_scale = min(cmd.speed_scale, self.cfg.slow_speed_scale)
         return cmd
+
+    def _gain_profile(self) -> GainProfile:
+        """@brief 팻말 분기를 마친 뒤 구간의 제어 게인 프로파일(그 전은 DEFAULT).
+
+        @details 팻말 뒤 코스는 **직선-ㄱ자-직선-ㄱ자**로 곡률이 계단처럼 뛴다. S자(곡률
+        연속)와 성격이 정반대라 같은 게인으로 둘 다 만족시킬 수 없다:
+        - S자: heading_error가 경로 끝점까지의 현 각도라 **1m 앞을 미리 본다** = 이득.
+        - ㄱ자: 차가 아직 직선인데 경로 끝만 코너를 돌아 ψ가 커진다 → 코너 1m 전부터
+          조향이 걸려 라인 이탈(07-16 실차). controller.yaml k_heading 0.5→0.33도 같은
+          싸움의 흔적 = 전역 튜닝의 한계.
+        판단은 **구간 성격만** 지시하고 게인 수치는 controller.yaml이 갖는다(계약 §4.4).
+        _sign_done은 이미 있는 1회성 래치라 새 상태가 필요 없다. 분기 중(SIGN_BRANCH)은
+        제외 — 지금 튜닝된 분기 동작을 건드리지 않기 위해서다.
+        @return 제어에 지시할 게인 프로파일.
+        """
+        if not self._sign_done or not self.cfg.post_sign_profile_enable:
+            return GainProfile.DEFAULT
+        return GainProfile.POST_SIGN
 
     def _sign_turn_hint(self) -> TurnHint:
         """@brief SIGN_BRANCH 중 래치된 팻말 방향 → 인지 앵커 차선 지시. 그 외 NONE.

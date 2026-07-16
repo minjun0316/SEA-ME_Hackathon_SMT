@@ -88,13 +88,16 @@ def generate_launch_description():
         DeclareLaunchArgument('rate_hz', default_value='30.0'),  # 07-10 10→30: 조향루프 지연↓(smoothing τ 0.45→0.13s). lane_follow가 실주행 스택이라 여기 값이 실제 적용됨(controller/mission.launch와 별개). 인지 카메라~26fps 수용.
         DeclareLaunchArgument('enable_drive', default_value='False',
                               description='True 라야 스로틀 발행(기본 조향만)'),
-        # [07-15] 0.0 → 0.04 확정. THROTTLE_FWD_START_US=1575(바닥 실측) 기준
-        # pulse = 1575 + p×425 → 0.04 = 1592µs = 떼는 값(1575µs) 바로 위 ≈ 최저 주행속.
+        # [07-16b] 0.04 → 0.07 확정. 07-16 실차 운용값(race.launch와 동일).
+        # THROTTLE_FWD_START_US=1575(바닥 실측), fwd_us=2000 → pulse = 1575 + p×425.
+        #   DRIVE(scale 0.9) → p=0.063 → 1602µs / 팻말 분기(scale 0.3) → p=0.021 → 1584µs.
         # ⚠ FWD_START_US를 바꾸면 이 값의 의미도 바뀐다(옛 1650 시절 0.16 = 1706µs).
+        # ⚠ 이 값을 바꾸면 mission.yaml sign_branch_speed_scale의 µs 표가 전부 무효다.
         #    근거·실측표: docs/calibration.md 3-b절.
-        DeclareLaunchArgument('drive_throttle', default_value='0.04',
-                              description='주행 스로틀(정규화). 07-15 실차 확정 0.04(≈1592µs). enable_drive=False면 무의미.'),
-        DeclareLaunchArgument('throttle_limit', default_value='0.20'),
+        DeclareLaunchArgument('drive_throttle', default_value='0.07',
+                              description='주행 스로틀(정규화). 07-16b 실차 확정 0.07. enable_drive=False면 무의미.'),
+        # [07-16b] 0.20 → 0.10(실차 운용값). DRIVE 최대 0.063이라 평시엔 안 물리는 안전 상한.
+        DeclareLaunchArgument('throttle_limit', default_value='0.10'),
         DeclareLaunchArgument('lane_timeout', default_value='0.3',
                               description='lane_path/판단 끊김 판정[s] → 정지'),
         DeclareLaunchArgument('stopline_maneuver', default_value='False',

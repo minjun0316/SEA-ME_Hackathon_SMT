@@ -59,6 +59,19 @@ class TurnHint(IntEnum):
     RIGHT = 2   ##< 우측 원형 차선으로 bias.
 
 
+class GainProfile(IntEnum):
+    """@brief 제어 게인 프로파일 지시(DriveCommand.gain_profile). 값=msg PROFILE_* 와 일치.
+
+    @details 판단은 "지금 어느 성격의 구간인지"만 말하고 **게인 수치는 모른다** — 실제 값은
+    controller.yaml(lateral_pd / lateral_pd_post_sign)에 있다(계약 §4.4 튜닝 일원화).
+    배율(scale)로 주면 튜닝 수치가 판단 쪽 yaml로 새고, 값을 하나 더 나눌 때마다 msg를
+    고쳐야 한다 → 프로파일 id 하나로 임의 개수의 게인을 구간별로 가른다.
+    """
+
+    DEFAULT = 0    ##< 기본(S자 흰선 코스 등). controller.yaml lateral_pd.
+    POST_SIGN = 1  ##< 팻말 분기 후(직선-ㄱ자-직선-ㄱ자). controller.yaml lateral_pd_post_sign.
+
+
 class RoiMode(IntEnum):
     """@brief 인지에 줄 ROI 지시(DriveCommand.roi_mode = LaneMode.roi_mode).
 
@@ -107,9 +120,12 @@ class DriveCommand:
                          위층 미션 SM만 페이즈에 따라 끄고(주행중) 켠다(출발/빨간불 종료).
     @var sign_enable     인지 팻말 YOLO(별도 모델) 게이트(True=ON). SIGN_BRANCH에서만 True.
     @var steer_bias      제어 조향 offset(트림 전 raw[-1,1], +=좌/-=우). 팻말 분기서만 ≠0.
+    @var gain_profile    제어 게인 프로파일 지시(DEFAULT/POST_SIGN). 팻말 분기 후만 POST_SIGN.
+                         수치는 controller.yaml에 있고 판단은 구간 성격만 지시한다.
 
     @note follow_color/turn_hint/roi_mode/yolo_enable/sign_enable 는 제어가 아니라 **인지 지시**,
-    steer_bias 는 **제어 지시**다. ROS 발행 시 DriveCommand(제어)와 LaneMode(인지)로 나눠 실어 보낸다.
+    steer_bias/gain_profile 는 **제어 지시**다. ROS 발행 시 DriveCommand(제어)와
+    LaneMode(인지)로 나눠 실어 보낸다.
     """
 
     state: DriveState = DriveState.INIT
@@ -123,6 +139,7 @@ class DriveCommand:
     yolo_enable: bool = True
     sign_enable: bool = False
     steer_bias: float = 0.0
+    gain_profile: GainProfile = GainProfile.DEFAULT
 
 
 class DecisionMaker:

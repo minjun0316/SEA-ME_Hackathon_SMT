@@ -17,6 +17,10 @@ Pure Pursuit가 **먼 룩어헤드 점**(BEV 원거리=픽셀 적고 왜곡·캘
   값(좌커브 +, 우커브 −). lane_path 없으면 0으로 폴백(순수 PD로 안전 degrade).
 - @f$k_h\\psi@f$ (heading): 차선 방향에 정렬 → 위빙 억제. 각도라 BEV 스케일 캘리브
   오차에 둔감(강건). Stanley의 heading 항과 동일 역할 = 자연 감쇠.
+  ⚠ ψ는 인지가 **경로 최근접점→맨 끝점의 현 각도**로 주므로(접선이 아니다) 차 앞 약 1m를
+  본다 = 선반영이 내장돼 있다. S자엔 이득이지만 직진 후 90도 코너엔 조기조향(라인 이탈)이라,
+  판단이 구간별 **게인 프로파일**(계약 DriveCommand.gain_profile)로 세트를 갈아끼운다
+  → set_config() 참조.
 - @f$k_c e@f$ (crosstrack P): 차선중심으로 복귀.
 - @f$k_d\\dot e@f$ (crosstrack D, 선택): 근거리 신호라 노이즈 큼 → EMA로 필터한
   미분만 소량. 기본 0(heading 항이 주 감쇠).
@@ -82,6 +86,16 @@ class LateralPDController:
         self._deriv_ema = 0.0
         self._curv_ema = 0.0
         self._have_prev = False
+
+    def set_config(self, config: LateralPDConfig) -> None:
+        """@brief 게인 세트를 교체한다(구간별 프로파일 전환용).
+
+        @details 내부 상태(EMA·직전 조향·직전 오차)는 **유지**한다 — 프로파일이 바뀌었다고
+        필터를 리셋하면 그 순간 조향이 튄다(전환 지점이 하필 코너 진입이라 치명적). 게인만
+        갈아끼우고 이력은 이어간다. 같은 객체면 no-op이라 매 스텝 호출해도 싸다.
+        @param config 이번 스텝부터 쓸 게인 세트(계약 DriveCommand.gain_profile로 선택).
+        """
+        self.cfg = config
 
     def compute(self, lateral_offset: float, heading_error: float,
                 dt: float, curvature: float = 0.0) -> LateralPDResult:

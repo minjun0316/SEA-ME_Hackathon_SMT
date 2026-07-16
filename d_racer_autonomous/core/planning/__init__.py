@@ -23,6 +23,7 @@ from .decision import (
     DriveState,
     LaneColor,
     LaneObservation,
+    GainProfile,
     RoiMode,
     TurnHint,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "DriveState",
     "LaneColor",
     "LaneObservation",
+    "GainProfile",
     "RoiMode",
     "TurnHint",
     # 위층 미션 시퀀스

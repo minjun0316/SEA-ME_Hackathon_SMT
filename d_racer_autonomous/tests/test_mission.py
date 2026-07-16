@@ -16,6 +16,7 @@ from core.planning import (
     LaneObservation,
     MissionObservation,
     MissionPhase,
+    GainProfile,
     MissionSequencer,
     RoiMode,
     SignDirection,
@@ -173,6 +174,113 @@ def test_sign_branch_returns_after_duration_and_latches_done():
     # 팻말 다시 봐도 1회성 래치라 재진입 안 함.
     seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)
     assert seq.phase == MissionPhase.LANE_FOLLOW
+
+
+# --- 분기 종료 속도 램프 + 곡선 게이트(07-16b) ---------------------------
+
+_RAMP_CFG = dict(sign_branch_duration=0.1, sign_lost_release_sec=0.0,
+                 sign_branch_speed_scale=0.3, sign_exit_ramp_sec=1.0,
+                 sign_exit_straight_rad=0.2, sign_exit_hold_max_sec=4.0)
+
+
+def _to_exit_ramp(seq):
+    """@brief 팻말 분기를 통과시켜 '종료 램프 활성' 상태(LANE_FOLLOW)로 만든다."""
+    _to_lane_follow(seq)
+    seq.update(_obs(sign_direction=SignDirection.RIGHT), dt=0.05)
+    assert seq.phase == MissionPhase.SIGN_BRANCH
+    seq.update(_obs(sign_direction=SignDirection.RIGHT), dt=0.1)  # duration 경과 → 복귀.
+    assert seq.phase == MissionPhase.LANE_FOLLOW
+
+
+def test_exit_ramp_holds_branch_speed_through_merge_curve():
+    """합류 곡선(heading 큼)이 이어지는 동안 램프가 얼어 분기 속도를 유지한다.
+
+    램프가 시계로만 돌면 곡선 한복판에서 만료돼 거기서 속도가 붙었다(07-16 실차).
+    램프 시간(1.0s)의 3배를 곡선으로 흘려도 속도가 안 올라야 한다.
+    """
+    seq = MissionSequencer(_cfg(**_RAMP_CFG))
+    _to_exit_ramp(seq)
+    cmd = _tick(seq, n=60, dt=0.05, lane=_lane(heading_error=0.5))  # 3.0s 곡선.
+    assert cmd.speed_scale == 0.3
+
+
+def test_exit_ramp_resumes_when_lane_straightens():
+    """차선이 펴지면 그때부터 램프가 흘러 속도가 평시로 복귀한다."""
+    seq = MissionSequencer(_cfg(**_RAMP_CFG))
+    _to_exit_ramp(seq)
+    _tick(seq, n=20, dt=0.05, lane=_lane(heading_error=0.5))       # 1.0s 곡선 = 유지.
+    mid = _tick(seq, n=10, dt=0.05, lane=_lane(heading_error=0.0))  # 0.5s 직선 = 램프 중.
+    assert 0.3 < mid.speed_scale < 1.0
+    end = _tick(seq, n=12, dt=0.05, lane=_lane(heading_error=0.0))  # 램프 완료.
+    assert end.speed_scale == 1.0                                   # drive_speed_scale 기본값.
+
+
+def test_exit_ramp_fallback_releases_when_curve_never_ends():
+    """heading이 계속 문턱 위여도 hold 상한을 넘으면 램프가 진행된다(영구 저속 방지)."""
+    seq = MissionSequencer(_cfg(**{**_RAMP_CFG, 'sign_exit_hold_max_sec': 1.0}))
+    _to_exit_ramp(seq)
+    held = _tick(seq, n=18, dt=0.05, lane=_lane(heading_error=0.5))  # 0.9s < 상한.
+    assert held.speed_scale == 0.3
+    # 상한(1.0s) 초과 → 곡선이어도 램프가 흐른다. 곡선이라 SLOW 상한(0.5)까지.
+    freed = _tick(seq, n=30, dt=0.05, lane=_lane(heading_error=0.5))
+    assert freed.speed_scale == 0.5
+
+
+def test_exit_ramp_holds_while_lane_lost():
+    """차선 미검출이면 램프를 붙든다 — heading_error=0(watchdog)을 직선으로 오독 금지."""
+    seq = MissionSequencer(_cfg(**_RAMP_CFG))
+    _to_exit_ramp(seq)
+    # 미검출은 heading_error=0.0으로 들어온다(mission_node watchdog). 게이트만 보면 '직선'.
+    lost = _lane(lane_detected=False, confidence=0.0, num_points=0, heading_error=0.0)
+    _tick(seq, n=40, dt=0.05, lane=lost)                          # 2.0s > 램프 1.0s.
+    cmd = _tick(seq, n=4, dt=0.05, lane=_lane(heading_error=0.5))  # 곡선서 차선 복구.
+    assert cmd.speed_scale == 0.3   # 램프가 안 흘렀다 → 분기 속도 유지.
+
+
+def test_exit_ramp_gate_off_is_pure_time_ramp():
+    """sign_exit_straight_rad=0 = 게이트 끔 → 곡선이어도 시간만으로 복귀(옛 동작)."""
+    seq = MissionSequencer(_cfg(**{**_RAMP_CFG, 'sign_exit_straight_rad': 0.0}))
+    _to_exit_ramp(seq)
+    cmd = _tick(seq, n=30, dt=0.05, lane=_lane(heading_error=0.5))   # 1.5s > 램프 1.0s.
+    assert cmd.speed_scale == 0.5   # 램프 완료 → SLOW 상한(곡선이므로).
+
+
+# --- 구간별 게인 프로파일(gain_profile, 07-16b) -------------------------
+
+def test_gain_profile_default_before_sign():
+    """팻말 前(S자)은 DEFAULT — 곡률이 연속이라 heading 선반영이 이득인 구간."""
+    seq = MissionSequencer(_cfg())
+    _to_lane_follow(seq)
+    assert _tick(seq).gain_profile == GainProfile.DEFAULT
+
+
+def test_gain_profile_default_during_branch():
+    """분기 중(SIGN_BRANCH)엔 전환 안 함 — 지금 튜닝된 분기 동작 보존."""
+    seq = MissionSequencer(_cfg(sign_branch_duration=1.0))
+    _to_lane_follow(seq)
+    cmd = seq.update(_obs(sign_direction=SignDirection.LEFT), dt=0.05)
+    assert seq.phase == MissionPhase.SIGN_BRANCH
+    assert cmd.gain_profile == GainProfile.DEFAULT
+
+
+def test_gain_profile_post_sign_after_branch():
+    """분기를 마치면(_sign_done) 직선-ㄱ자 구간이라 POST_SIGN 세트를 지시한다."""
+    seq = MissionSequencer(_cfg(**_RAMP_CFG))
+    _to_exit_ramp(seq)
+    assert _tick(seq).gain_profile == GainProfile.POST_SIGN
+    # 장애물 구역을 지나 재출발한 뒤에도 유지(래치라 코스 끝까지 ㄱ자 구간).
+    seq.update(_obs(aruco_present=True), dt=0.05)
+    seq.update(_obs(aruco_present=True), dt=2.5)
+    cmd = seq.update(_obs(aruco_present=False), dt=0.05)
+    assert seq.phase == MissionPhase.FINISH_WATCH
+    assert cmd.gain_profile == GainProfile.POST_SIGN
+
+
+def test_gain_profile_disabled_stays_default():
+    """post_sign_profile_enable=false면 전 구간 DEFAULT(옛 동작)."""
+    seq = MissionSequencer(_cfg(**{**_RAMP_CFG, 'post_sign_profile_enable': False}))
+    _to_exit_ramp(seq)
+    assert _tick(seq).gain_profile == GainProfile.DEFAULT
 
 
 def test_aruco_preempts_sign_branch():

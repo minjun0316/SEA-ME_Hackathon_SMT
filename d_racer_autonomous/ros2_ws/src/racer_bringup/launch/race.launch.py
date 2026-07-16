@@ -44,12 +44,20 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument('enable_drive', default_value='False',
                               description='True 라야 스로틀 발행(기본 조향만). 초록불 게이트가 실제 출발 제어.'),
-        # [07-15] 0.0 → 0.04 확정(lane_follow와 동일). FWD_START_US=1575 기준 ≈1592µs
-        # = 이 차의 최저 주행속. 근거·실측표: docs/calibration.md 3-b절.
-        DeclareLaunchArgument('drive_throttle', default_value='0.04',
-                              description='주행 스로틀(정규화). 07-15 실차 확정 0.04(≈1592µs).'),
-        DeclareLaunchArgument('throttle_limit', default_value='0.20',
-                              description='스로틀 하드 클램프 상한.'),
+        # [07-16b] 0.04 → 0.07 확정(lane_follow와 동일). 07-16 실차 운용값 = 이 값으로
+        # 팻말 분기·ㄱ자 구간 튜닝을 전부 잡았다(mission.yaml의 µs 표도 0.07 기준).
+        # FWD_START_US=1575, fwd_us=2000 → pulse = 1575 + p×425.
+        #   DRIVE(scale 0.9)  → p=0.063 → 1602µs(문턱 위 27µs)
+        #   분기 (scale 0.3)  → p=0.021 → 1584µs(문턱 위  9µs)
+        # ⚠ 이 값을 바꾸면 mission.yaml sign_branch_speed_scale의 µs 표와 그 아래 튜닝
+        #   판단이 **전부 무효**다(배율이라 실속도는 여기에 달렸다). 근거: docs/calibration.md 3-b절.
+        DeclareLaunchArgument('drive_throttle', default_value='0.07',
+                              description='주행 스로틀(정규화). 07-16b 실차 확정 0.07.'),
+        # [07-16b] 0.20 → 0.10. 07-16 실차 운용값. DRIVE 최대가 0.063이라 평시엔 안 물리고,
+        # 게인/배율 버그로 스로틀이 튈 때만 잡는 **안전 상한**이다. 0.20은 실효 3배까지
+        # 허용해 상한 구실을 못 했다.
+        DeclareLaunchArgument('throttle_limit', default_value='0.10',
+                              description='스로틀 하드 클램프 상한. 07-16b 실차 운용값 0.10.'),
         DeclareLaunchArgument('stopline_maneuver', default_value='False',
                               description='정지선 카운트→개루프 고정스티어 기동(로터리 진입/탈출). '
                                           '[2026-07-14] 흰선 폐루프 코스=로터리 없음 → 기본 OFF. '

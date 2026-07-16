@@ -139,3 +139,43 @@ def test_curvature_feedforward_respects_steering_sign():
     neg = _ctrl(k_cross=0.0, k_heading=0.0, k_ff=0.5, steering_sign=-1.0,
                 curvature_smoothing=1.0).compute(0.0, 0.0, dt=0.1, curvature=1.0)
     assert math.isclose(pos.steering_norm, -neg.steering_norm, abs_tol=1e-9)
+
+
+# --- 구간별 게인 프로파일 전환(07-16b) ----------------------------------
+
+def test_set_config_swaps_gains():
+    """set_config로 게인 세트를 갈아끼우면 그 스텝부터 새 게인이 적용된다."""
+    from core.config_schema import LateralPDConfig
+    ctrl = _ctrl(k_heading=0.33, steering_smoothing=1.0)
+    before = ctrl.compute(0.0, 0.5, dt=0.1)
+    post = LateralPDConfig(k_cross=1.2, k_heading=0.231, k_deriv=0.0,
+                           steering_smoothing=1.0)
+    ctrl.set_config(post)
+    after = ctrl.compute(0.0, 0.5, dt=0.1)
+    assert math.isclose(before.p_heading, 0.33 * 0.5, rel_tol=1e-6)
+    assert math.isclose(after.p_heading, 0.231 * 0.5, rel_tol=1e-6)
+
+
+def test_set_config_preserves_internal_state():
+    """프로파일 전환이 EMA/직전조향을 리셋하면 그 순간 조향이 튄다 — 이력은 유지된다."""
+    from core.config_schema import LateralPDConfig
+    same = dict(k_cross=1.2, k_heading=0.8, k_deriv=0.0, steering_smoothing=0.5)
+    a = _ctrl(**same)
+    b = _ctrl(**same)
+    for _ in range(5):                       # 동일 이력을 쌓는다.
+        a.compute(0.2, 0.1, dt=0.1)
+        b.compute(0.2, 0.1, dt=0.1)
+    b.set_config(LateralPDConfig(**same))    # 값이 같은 세트로 교체 = 결과가 같아야 한다.
+    assert math.isclose(a.compute(0.2, 0.1, dt=0.1).steering_norm,
+                        b.compute(0.2, 0.1, dt=0.1).steering_norm, rel_tol=1e-9)
+
+
+def test_post_sign_gains_reduce_early_steer():
+    """직진 접근(offset≈0)인데 ψ만 큰 상황 = ㄱ자 선반영 → post_sign 세트가 조기조향을 줄인다.
+
+    ψ는 경로 끝점까지의 현 각도라 코너 1m 전부터 커진다. 그때 offset은 아직 0이라
+    조향은 사실상 heading 항 단독 = k_heading이 그대로 조기조향 크기가 된다.
+    """
+    base = _ctrl(k_heading=0.33, steering_smoothing=1.0).compute(0.0, 0.7, dt=0.1)
+    post = _ctrl(k_heading=0.231, steering_smoothing=1.0).compute(0.0, 0.7, dt=0.1)
+    assert 0.0 < post.steering_norm < base.steering_norm

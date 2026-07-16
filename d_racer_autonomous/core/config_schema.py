@@ -220,6 +220,25 @@ class MissionConfig:
     # 해졌다(07-16 실차). 속도를 sign_branch_speed_scale → 1.0으로 이 시간에 걸쳐 선형 복귀.
     # 합류가 끝나도록 넉넉히 잡되, 길면 그만큼 코스 시간을 잃는다. 여전히 급하면 ↑.
     sign_exit_ramp_sec: float = 1.5          ##< 분기 종료 후 속도 복귀에 쓰는 시간[s]. 0=끔.
+    # [07-16b] 램프에 **곡선 게이트**를 건다. 시계로만 도는 램프는 갈래가 다시 합쳐지는
+    # 곡선을 언제 빠져나오는지 모른다 — 통과 시점은 속도에, 그 속도는 배터리에 달렸다
+    # (sign_lost_release_sec과 같은 함정). 고정 1.5s가 곡선 한복판에서 만료돼 거기서
+    # 이미 속도가 붙었고 꿀렁임이 심해졌다(07-16 실차). → |heading_error|가 이 값 미만
+    # (=차선이 폈다)일 때만 램프 타이머를 흘린다. 곡선 중엔 얼려서 분기 속도를 유지한다.
+    # heading_slow(0.35)보다 **낮게** 잡아야 '확실히 편 뒤에만' 속도를 올린다.
+    # 0=게이트 끔(옛 동작=순수 시간 램프).
+    # ⚠ 노이즈는 안전한 쪽으로 실패한다(램프가 잠깐 멈출 뿐) — 그래서 중앙값 필터가 없다.
+    # 곡선에서 아직 속도가 붙으면 ↑, 직선인데 복귀가 늦으면 ↓.
+    sign_exit_straight_rad: float = 0.20     ##< 램프 진행 조건: |heading_error| 이 값 미만 = 직선[rad]. 0=게이트 끔.
+    # 위 게이트의 **폴백 상한**. heading_error가 노이즈/편향으로 계속 문턱 위에 머물면
+    # 램프가 영영 안 흘러 코스 끝까지 분기 속도로 기어간다 → 곡선에 갇힌 시간이 이 값을
+    # 넘으면 게이트를 무시하고 램프를 진행시킨다. sign_branch_duration이 상한 폴백으로
+    # 남은 것과 같은 패턴이다. 합류 곡선을 넉넉히 덮되, 길면 그만큼 코스 시간을 잃는다.
+    sign_exit_hold_max_sec: float = 4.0      ##< 곡선 게이트로 램프를 붙들 수 있는 최대 시간[s]. 초과 시 게이트 무시.
+    # [07-16b] 팻말 분기를 마치면 제어에 post_sign **게인 프로파일**을 지시할지.
+    # 실제 게인 수치는 controller.yaml의 lateral_pd_post_sign 블록에 있다(튜닝 일원화,
+    # 계약 §4.4) — 판단은 "어느 구간인지"만 말하고 값은 모른다. False=끔(전 구간 baseline).
+    post_sign_profile_enable: bool = True    ##< 팻말 분기 후 post_sign 게인 프로파일 지시. False=끔.
     # --- 동적 장애물(아루코) — 07-15 ---
     # 아루코가 사라졌을 때 '진짜 재출발'과 '오검출이었음'을 가르는 최소 체류시간.
     # 이보다 짧게 머물렀으면 오검출로 보고 FINISH_WATCH가 아니라 LANE_FOLLOW로 되돌린다
@@ -288,6 +307,12 @@ class AppConfig:
     vehicle: VehicleConfig = field(default_factory=VehicleConfig)
     pure_pursuit: PurePursuitConfig = field(default_factory=PurePursuitConfig)
     lateral_pd: LateralPDConfig = field(default_factory=LateralPDConfig)
+    # [07-16b] 팻말 분기 후 구간(직선-ㄱ자-직선-ㄱ자) 전용 lateral_pd 게인 세트.
+    # baseline(lateral_pd)을 상속하고 yaml의 lateral_pd_post_sign에 적은 키만 덮어쓴다
+    # → 그 구간 값을 아무리 바꿔도 msg/계약 변경이 없다(판단은 프로파일 id만 지시).
+    # 왜 세트인가: S자는 곡률이 연속이라 선반영이 이득이고, 팻말 뒤는 직선↔90도 계단이라
+    # 같은 게인으로 둘 다 만족시킬 수 없다(k_heading 0.5→0.33 싸움이 그 증거).
+    lateral_pd_post_sign: LateralPDConfig = field(default_factory=LateralPDConfig)
     speed: SpeedConfig = field(default_factory=SpeedConfig)
     stopline_maneuver: StoplineManeuverConfig = field(default_factory=StoplineManeuverConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
@@ -298,10 +323,16 @@ class AppConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppConfig":
         data = data or {}
+        # post_sign 프로파일은 baseline을 **상속**한다: lateral_pd에 적힌 값을 깔고
+        # lateral_pd_post_sign에 적힌 키만 덮어쓴다. 그래야 baseline을 튜닝했을 때
+        # 그 구간만 조용히 옛 값에 남는 일이 없다(두 블록을 따로 관리하면 반드시 갈라진다).
+        lpd_base = data.get("lateral_pd", {}) or {}
+        lpd_post = {**lpd_base, **(data.get("lateral_pd_post_sign", {}) or {})}
         return cls(
             vehicle=VehicleConfig.from_dict(data.get("vehicle", {})),
             pure_pursuit=PurePursuitConfig.from_dict(data.get("pure_pursuit", {})),
-            lateral_pd=LateralPDConfig.from_dict(data.get("lateral_pd", {})),
+            lateral_pd=LateralPDConfig.from_dict(lpd_base),
+            lateral_pd_post_sign=LateralPDConfig.from_dict(lpd_post),
             speed=SpeedConfig.from_dict(data.get("speed", {})),
             stopline_maneuver=StoplineManeuverConfig.from_dict(data.get("stopline_maneuver", {})),
             decision=DecisionConfig.from_dict(data.get("decision", {})),

@@ -183,6 +183,7 @@ class ControllerNode(Node):
         # 튜닝 편의: `racer-run pd_k_heading:=0.4`처럼 파일 안 고치고 즉석 스윕.
         # 비워두면(기본 '') YAML 값을 그대로 쓴다. 좋은 값이 나오면 YAML에 박아 영구화.
         lpd = self.config.lateral_pd
+        lpd_post = self.config.lateral_pd_post_sign
         for _name in ('steering_sign', 'k_cross', 'k_cross_kappa', 'k_cross_max',
                       'k_heading', 'k_deriv',
                       'deriv_smoothing', 'max_offset', 'steering_smoothing',
@@ -191,9 +192,13 @@ class ControllerNode(Node):
             self.declare_parameter(f'pd_{_name}', '')
             _v = str(self.get_parameter(f'pd_{_name}').value).strip()
             if _v:
+                # 두 프로파일 **모두**에 건다. CLI는 스윕용 디버그 도구인데 baseline만
+                # 바꾸면 팻말 뒤 구간에서 조용히 안 먹혀(= post_sign이 YAML 값을 유지)
+                # "왜 안 변하지"로 시간을 태운다. 구간별로 다르게 주고 싶으면 YAML이 맞다.
                 setattr(lpd, _name, float(_v))
+                setattr(lpd_post, _name, float(_v))
                 self.get_logger().info(
-                    f'  lateral_pd.{_name} = {float(_v)} (CLI 오버라이드, YAML 무시)')
+                    f'  lateral_pd.{_name} = {float(_v)} (CLI 오버라이드, YAML 무시, 양 프로파일)')
         self.get_logger().info(
             f'  lateral_pd 활성값: sign={lpd.steering_sign} k_cross={lpd.k_cross} '
             f'k_cross_kappa={lpd.k_cross_kappa} k_cross_max={lpd.k_cross_max} '
@@ -201,6 +206,14 @@ class ControllerNode(Node):
             f'smooth={lpd.steering_smoothing} max_off={lpd.max_offset} '
             f'k_ff={lpd.k_ff} curv_smooth={lpd.curvature_smoothing} '
             f'curv_db={lpd.curvature_deadband} curv_prev={lpd.curvature_preview}')
+        # post_sign 프로파일(팻말 분기 후 = 직선-ㄱ자-직선-ㄱ자). baseline과 다른 값만 찍는다.
+        _diff = {f: (getattr(lpd, f), getattr(lpd_post, f))
+                 for f in lpd.__dataclass_fields__
+                 if getattr(lpd, f) != getattr(lpd_post, f)}
+        self.get_logger().info(
+            '  lateral_pd_post_sign: ' + (
+                ' '.join(f'{k}={b}→{p}' for k, (b, p) in _diff.items()) if _diff
+                else '(baseline과 동일 — 구간 분기 효과 없음)'))
 
         # --- 정지선 개루프 고정스티어 기동 (로터리 진입/탈출) ---
         # on/off는 운영 플래그 → ROS 파라미터(런치 인자). 튜닝값은 controller.yaml.
@@ -340,6 +353,19 @@ class ControllerNode(Node):
             return None, 'lane_lost'
         return self._lane_status, None
 
+    def _lat_cfg_for(self, gain_profile: int):
+        """@brief 판단이 지시한 게인 프로파일 → 쓸 lateral_pd 게인 세트(계약 §4.4).
+
+        @details 팻말 뒤 코스(직선-ㄱ자-직선-ㄱ자)는 S자와 곡률 성격이 정반대라 게인 세트를
+        가른다. 판단은 구간 성격(gain_profile)만 주고 **수치는 여기(controller.yaml)** 있다.
+        모르는 값이면 baseline으로 폴백한다 — 계약이 앞서가도 제어는 안전한 기본으로 돈다.
+        @param gain_profile racer_msgs/DriveCommand.PROFILE_* 값.
+        @return LateralPDConfig.
+        """
+        if gain_profile == 1:      # PROFILE_POST_SIGN
+            return self.config.lateral_pd_post_sign
+        return self.config.lateral_pd
+
     def _near_field_curvature(self):
         """@brief lateral_pd 곡률 피드포워드용 근거리 부호곡률 κ [1/m].
 
@@ -391,6 +417,7 @@ class ControllerNode(Node):
         speed_scale = 1.0
         steer_limit = 1.0
         steer_bias = 0.0     # 팻말 분기(SIGN_BRANCH) 조향 offset. 그 외 0.0.
+        gain_profile = 0     # 제어 게인 프로파일(계약 §4.4). 팻말 분기 후만 POST_SIGN=1.
         if cmd is not None:
             cmd_age = (self.get_clock().now() - self._drive_cmd_time).nanoseconds * 1e-9
             if cmd_age > self.lane_timeout:
@@ -400,6 +427,9 @@ class ControllerNode(Node):
                 speed_scale = float(cmd.speed_scale)
                 steer_limit = float(cmd.steer_limit)
                 steer_bias = float(getattr(cmd, 'steer_bias', 0.0))
+                # gain_profile: 미지정(=0)이 곧 DEFAULT라 ROS 기본값과 계약 기본값이 일치한다
+                # (배율 방식과 달리 '안 채움'이 위험값이 되지 않는다).
+                gain_profile = int(getattr(cmd, 'gain_profile', 0))
                 if (not cmd.go) or cmd.state in (int(DriveState.STOP), int(DriveState.LOST)):
                     gate_stop = True
                     gate_reason = 'gate'
@@ -451,6 +481,8 @@ class ControllerNode(Node):
                 # 근거리 PD: lane_status의 offset+heading으로 조향. 곡률 피드포워드는
                 # lane_path 근거리 κ(있으면), 없으면 0(순수 PD).
                 kappa = self._near_field_curvature()
+                # 구간별 게인 세트 선택(계약 §4.4). 내부 상태(EMA·직전 조향)는 유지된다.
+                self.lat.set_config(self._lat_cfg_for(gain_profile))
                 lat = self.lat.compute(float(control_input.lateral_offset),
                                        float(control_input.heading_error),
                                        self.dt, curvature=kappa)

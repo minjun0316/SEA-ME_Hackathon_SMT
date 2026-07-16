@@ -201,6 +201,7 @@ class MissionNode(Node):
         out.lookahead_scale = float(cmd.lookahead_scale)
         out.steer_limit = float(cmd.steer_limit)
         out.steer_bias = float(cmd.steer_bias)     # 07-15 밤 팻말 재설계로 상시 0.0(고정조향 폐기 → 앵커 차선). 계약 유지용.
+        out.gain_profile = int(cmd.gain_profile)   # 07-16b 구간별 게인 프로파일(계약 §4.4). 수치는 controller.yaml.
         self.pub_cmd.publish(out)
 
         mode = LaneMode()
