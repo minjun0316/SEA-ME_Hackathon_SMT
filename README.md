@@ -1,179 +1,127 @@
-# TOPST D-Racer Kit
-
-<!--
-Cover image area
-
-Add the main D-Racer Kit cover image here.
-Recommended width: 900~1200px
-
-Example:
-
 <p align="center">
-  <img src="docs/asset/readme/d-racer-cover.jpg" alt="TOPST D-Racer Kit" width="900">
-</p>
--->
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/topst-development/D-Racer-Kit/refs/heads/dev/docs/asset/readme/D-Racer-main-figure.png" alt="D-Racer KIT" width="720">
-  <br>
-  <b>D-Racer KIT</b>
+  <img src="https://raw.githubusercontent.com/topst-development/D-Racer-Kit/refs/heads/dev/docs/asset/readme/D-Racer-main-figure.png" alt="D-Racer" width="600">
 </p>
 
-<br>
+# D-Racer SMT — 단일 카메라 자율주행 스택
 
+**TOPST D3-G 스케일카 · ROS2 Humble 기반 경로추종 자율주행**
 
-TOPST D-Racer Kit는 **D3-G를 이용한 ROS2 기반 Racing Kit**입니다. 사용자는 D3-G 플랫폼 위에서 카메라, 조이스틱, 모터 제어, 배터리 상태, 웹 모니터링 기능을 ROS2 패키지로 다루며 RC Racing 시스템을 구성하고 확장할 수 있습니다.
+> **SEA:ME HACKATHON · 우승 (1st Place)** — Team SMT
 
-이 저장소는 D-Racer Kit의 ROS2 패키지 소스 코드와 조립, 개발환경 설정, 패키지별 사용 가이드를 제공합니다.
+전방 카메라 한 대로 차선 · 신호등 · 방향 팻말 · 동적 장애물을 인지하고, 6-state 미션 FSM으로 판단해 트랙 전 구간을 온보드(4-core ARM)에서 완주한다. 인지 · 판단 · 제어를 ROS2 커스텀 메시지(`LaneStatus`, `MissionCues`, `DriveCommand`)로 분리한 계층 구조.
 
-<br>
+- **인지** — BEV(IPM) + 슬라이딩 윈도우 차선검출 · YOLO×2(NCNN) 신호등/팻말 · ArUco 장애물
+- **판단** — 2계층 상태기계 (상위 6-state 미션 FSM + 하위 반응형 SM)
+- **제어** — Lateral PD + 곡률 피드포워드 조향 · 곡률 기반 종속도 (시뮬 ↔ 실차 동일 코드)
 
-## 1. Overview
+📄 설계 문서 — **[인지](docs/perception.md)** · **[판단](docs/planning.md)** · **[제어](docs/control.md)**
 
-D-Racer Kit는 D3-G 기반 차량 플랫폼을 ROS2에서 제어할 수 있도록 구성한 Racing Kit입니다. 하드웨어 제어와 센서 데이터를 ROS2 토픽과 노드 구조로 분리해, 사용자가 수동주행, 데이터 수집, 모니터링, 영상처리 실험 등을 단계적으로 구현할 수 있습니다.
+🎬 **주행 영상** — [대회 본선 주행 (YouTube)](https://youtube.com/shorts/sVNL-lCpRhU)
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/topst-development/D-Racer-Kit/refs/heads/dev/docs/asset/readme/D-Racer-kit.jpg" alt="D-Racer Kit" width="480">
-  <br>
-  <b>D-Racer Kit</b>
-</p>
+---
 
-<br>
-주요 구성 요소:
+## 1. 시스템 아키텍처
 
-- D3-G 기반 Racing Kit 플랫폼
-- ROS2 패키지 기반 소프트웨어 구조
-- 카메라 영상 스트리밍
-- 조이스틱 기반 수동주행
-- 차량 throttle / steering 제어
-- 배터리 상태 모니터링
-- 웹 기반 대시보드
-- OpenCV 영상처리 테스트 패키지
-
-<br>
-
-## 2. Key Features
-
-### 2-1. D3-G 기반 Racing Kit
-
-D-Racer Kit는 D3-G를 차량 제어 플랫폼으로 사용합니다. ROS2 환경에서 차량의 구동부와 센서 데이터를 다룰 수 있도록 패키지가 구성되어 있어, RC Racing 실습과 ROS2 기반 로봇 소프트웨어 개발에 활용할 수 있습니다.
-
-### 2-2. ROS2 Compatible Platform
-
-각 기능은 ROS2 노드와 토픽 중심으로 분리되어 있습니다. 사용자는 필요한 패키지만 실행하거나, launch 파일을 통해 여러 노드를 함께 실행할 수 있습니다.
-
-```text
-Joystick Node  --->  Control Node  --->  Motor / Steering
-
-Camera Node    --->  Monitor Node  --->  Web Dashboard
-
-Battery Node   --->  Monitor Node
+```mermaid
+flowchart LR
+    CAM["Camera 20Hz"] --> LANE & CUES
+    subgraph P["인지"]
+        LANE["lane_detect<br>BEV + 슬라이딩 윈도우"]
+        CUES["mission_cues<br>YOLO×2 + ArUco"]
+    end
+    subgraph D["판단"]
+        FSM["mission<br>6-state FSM"]
+        DEC["decision<br>반응형 SM"]
+    end
+    subgraph C["제어"]
+        CTRL["controller<br>Lateral PD + 속도"]
+    end
+    LANE -- LaneStatus --> FSM
+    CUES -- MissionCues --> FSM
+    FSM --> DEC -- DriveCommand --> CTRL --> MOTOR["PCA9685"]
 ```
 
-### 2-3. Manual Driving
+계층 간 계약은 ROS2 커스텀 메시지로 고정한다.
 
-조이스틱 입력을 ROS2 토픽으로 변환하고, 제어 패키지에서 throttle과 steering 명령으로 전달해 차량을 수동으로 주행할 수 있습니다. 하드웨어 조립 후 동작 확인, 주행 테스트, 데이터 수집 전에 기본 제어 상태를 확인하는 용도로 사용할 수 있습니다.
+| 메시지 | 방향 | 내용 |
+|---|---|---|
+| `LaneStatus` | 인지 → 판단 | 차선 검출 여부 · 횡오차 · heading 오차 · 차선 경로점 |
+| `MissionCues` | 인지 → 판단 | 신호등/팻말 라벨 · ArUco 유무 · 구간 트리거 |
+| `DriveCommand` | 판단 → 제어 | 목표 경로 · 조향 bias · 속도 스케일 · 게인 프로파일 |
 
-### 2-4. Camera Streaming
+**불변 규칙** — ① 인지는 조향·속도를 계산하지 않는다 ② 판단은 미션 상태와 지시만 만든다 ③ 제어는 지령만 입력받고 인지 내부를 모른다.
 
-카메라 패키지는 차량에 장착된 카메라 영상을 ROS2 `sensor_msgs/msg/CompressedImage` 형식으로 publish합니다.
+상세 설계: [`d_racer_autonomous/docs/architecture.md`](d_racer_autonomous/docs/architecture.md)
 
-기본 이미지 토픽:
+---
 
-```text
-/camera/image/compressed
-```
-
-### 2-5. Web Monitoring Dashboard
-
-Monitor 패키지는 ROS2 토픽 데이터를 웹 대시보드로 제공합니다. 차량 상태를 브라우저에서 확인할 수 있어 주행 테스트 중 디버깅과 상태 확인에 활용할 수 있습니다.
-
-대시보드에서 확인할 수 있는 정보:
-
-- 메인 카메라 스트림
-- 배터리 상태
-- 제어값 throttle / steering
-- 녹화 상태
-- 저장장치 사용량
-- ROS2 노드 및 토픽 상태
-- OpenCV 디버그 이미지
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/topst-development/D-Racer-Kit/refs/heads/dev/docs/asset/readme/dashboard-example.png" alt="D-Racer Monitor Dashboard" width="720">
-  <br>
-  <b>D-Racer Monitor Dashboard</b>
-</p>
-
-<br>
-
-## 3. Demo - OpenCV 기반 자율주행 테스트
-
-OpenCV 기반 자율주행은 D-Racer Kit에서 카메라 영상처리와 차량 제어 흐름을 검증하기 위해 테스트한 데모입니다. 기본 제품 소개의 핵심 기능이라기보다는, ROS2 토픽 구조 위에서 영상처리 결과를 주행 제어에 연결할 수 있음을 보여주는 예시로 볼 수 있습니다. (* 테스트 트랙: WaveShare PiRacer 트랙)
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/topst-development/D-Racer-Kit/refs/heads/dev/docs/asset/readme/D-Racer-opencv-lane-following.gif" alt="D-Racer OpenCV Lane Following Test" width="720">
-  <br>
-  <b>D-Racer OpenCV Lane Following Test</b>
-</p>
-
-## 4. Package Structure
-
-| Package | Description |
-|---|---|
-| `camera` | 카메라 이미지 publish |
-| `control` | 차량 throttle / steering 제어 |
-| `joystick` | 조이스틱 입력 처리 및 수동주행 |
-| `monitor` | 웹 기반 상태 모니터링 |
-| `battery` | 배터리 상태 publish |
-| `opencv` | OpenCV 기반 영상처리 테스트 |
-| `topst_utils` | D3-G 및 하드웨어 제어 유틸리티 |
-| `battery_msgs` | 배터리 custom message |
-| `control_msgs` | 제어 custom message |
-| `joystick_msgs` | 조이스틱 custom message |
-
-<br>
-
-## 5. Documentation
-
-자세한 조립, 개발환경 설정, 패키지별 사용법은 아래 문서를 참고합니다.
-
-| No. | Document |
-|---|---|
-| 1 | [D-Racer Hardware Assembly Guide](docs/%5B1%5D%20D-Racer%20Hardware%20Assembly%20Guide.md) |
-| 2 | [Development Environment Setup Guide](docs/%5B2%5D%20Development%20Environment%20Setup%20Guide.md) |
-| 3 | [Claude Code CLI Guide](docs/%5B3%5D%20Claude%20Code%20CLI%20Guide.md) |
-| 4 | [D-Racer ROS2 Package Build Guide](docs/%5B4%5D%20D-Racer%20ROS2%20Package%20Build%20Guide.md) |
-| 5 | [Monitor Package](docs/%5B5%5D%20Monitor%20Package.md) |
-| 6 | [Battery Package](docs/%5B6%5D%20Battery%20Package.md) |
-| 7 | [Camera Package](docs/%5B7%5D%20Camera%20Package.md) |
-| 8 | [Joystick & Control Package](docs/%5B8%5D%20Joystick%20%26%20Control%20Package.md) |
-| 9 | [OpenCV Package](docs/%5B9%5D%20OpenCV%20Package.md) |
-
-<br>
-
-## 6. Repository Layout
+## 2. 미션 시나리오
 
 ```text
-D-Racer-Kit/
-├── src/
-│   ├── camera/
-│   ├── control/
-│   ├── joystick/
-│   ├── monitor/
-│   ├── opencv/
-│   ├── battery/
-│   ├── topst_utils/
-│   ├── battery_msgs/
-│   ├── control_msgs/
-│   └── joystick_msgs/
-├── docs/
-├── bagfile/
-├── README.md
-└── LICENSE
+초록불 인식 → S자 흰 차선 주행 → 방향 팻말(좌/우) 분기
+    → 흰선 폐루프 → 동적 장애물(아루코) 정지·재출발 → 빨간불 최종 정지
 ```
 
-<br>
+- 신호등 · 팻말 방향 = YOLO (자체 학습 2개)
+- 차선 · 팻말 구간 트리거 = OpenCV
+- 동적 장애물 = ArUco 마커
 
-## 7. License
+---
 
-This project is licensed under the terms described in [LICENSE](LICENSE).
+## 3. 저장소 구조
+
+```text
+├── d_racer_autonomous/          # 자율주행 스택 (팀 개발)
+│   ├── core/                    #   ROS-free 코어: perception / planning / control
+│   ├── sim/                     #   Bicycle Model 시뮬레이터 + 그리드 튜닝
+│   ├── config/                  #   전 파라미터 YAML
+│   ├── tests/                   #   pytest 단위·통합 테스트
+│   ├── docs/                    #   아키텍처 · FSM · 캘리브레이션 · 인터페이스 계약
+│   └── ros2_ws/src/
+│       ├── d_racer_perception/  #   차선 + YOLO/ArUco 미션 큐 노드
+│       ├── racer_bringup/       #   mission / decision / controller 노드 + 런치
+│       └── racer_msgs/          #   계층 간 데이터 계약
+├── src/                         # D-Racer Kit 기본 패키지 (+ 팀 수정)
+└── docs/                        # 파트별 설계 문서 (인지 / 판단 / 제어)
+```
+
+코어 모듈 지도(파일별 역할·읽는 순서): [`core/README.md`](d_racer_autonomous/core/README.md)
+
+---
+
+## 4. 실행
+
+```bash
+# 빌드 (D3-G 보드, ROS2 Humble)
+colcon build --symlink-install
+source install/setup.bash
+
+# 대회 주행 (전체 스택)
+ros2 launch racer_bringup race.launch.py
+
+# 차선 추종만 / 캘리브레이션
+ros2 launch racer_bringup lane_follow.launch.py
+ros2 launch racer_bringup calibration.launch.py
+```
+
+YOLO 가중치는 용량 문제로 미포함 — [`d_racer_perception/README.md`](d_racer_autonomous/ros2_ws/src/d_racer_perception/README.md) 참고.
+
+---
+
+## 5. 팀 SMT
+
+| 이름 | 담당 | 주요 작업 |
+|---|---|---|
+| 강민준 | 인지 | 차선 검출(BEV·슬라이딩 윈도우), YOLO 데이터셋 구축·학습, ArUco 검출 |
+| 최정윤 | 인지 | YOLO 학습·검증, NCNN 온보드 최적화(320px 15.5fps), 팻말 색 트리거 |
+| 성주은 | 판단 | 6-state 미션 FSM, 반응형 하위 SM, 오검출 방어 로직 |
+| 신동원 | 제어 | ROS-free 제어 코어, 시뮬레이터·그리드 튜닝, Lateral PD, 속도 프로파일 |
+
+<!-- 프로필 링크: [강민준](https://github.com/아이디) -->
+
+---
+
+## 6. Base Kit & License
+
+- 베이스 플랫폼: [TOPST D-Racer Kit](https://github.com/topst-development/D-Racer-Kit) (D3-G, ROS2 Humble)
+- License: [LICENSE](LICENSE)

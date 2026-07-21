@@ -1,9 +1,18 @@
 # D-Racer Autonomous
 
-D-Racer-Kit(ROS2 스케일카) 기반 대회용 자율주행 시스템.
-**인지 · 판단 · 제어를 분리**한 자동차 SW 회사식 구조로 개발한다.
+**SEA:ME HACKATHON 우승 🏆 Team SMT의 자율주행 스택** — D-Racer-Kit(ROS2 스케일카) 위에서
+**인지 · 판단 · 제어를 분리**한 자동차 SW 회사식 구조로 개발했다.
 
-> 전체 설계는 [`docs/architecture.md`](docs/architecture.md) 참고.
+## 📍 길찾기 — 어디로 가면 되나요?
+
+| 보고 싶은 것 | 여기로 |
+|--------------|--------|
+| 프로젝트 전체 소개·데모·팀 (포트폴리오) | [⬆ 저장소 메인 README](../README.md) |
+| **실제 주행 코드** — 모듈별 역할·핵심 수식·읽는 순서 | [`core/README.md`](core/README.md) ⭐ |
+| 설계 문서 (아키텍처·미션 FSM·계층 간 계약·캘리브레이션) | [`docs/`](docs/) — 시작은 [`architecture.md`](docs/architecture.md) |
+| 실차용 ROS2 노드·런치 파일 | [`ros2_ws/src/`](ros2_ws/src/) |
+| 시뮬레이터·자동 튜닝 | [`sim/`](sim/) — 아래 "빠른 시작" 참고 |
+| 튜닝 파라미터 | [`config/`](config/) (하드코딩 금지 원칙) |
 
 ## 핵심 원칙
 - 모든 인지는 **카메라 단독** → Pure Pursuit는 **로컬 프레임**에서 동작.
